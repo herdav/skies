@@ -5,11 +5,17 @@ import tkinter as tk
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 from datetime import datetime
 
-from routines.skylinewebcams import download_skyline_screenshot
-from routines.webcamimage import download_webcam_image
-from routines.dynamicjpg import download_dynamic_jpg
-from routines.youtube import download_youtube_screenshot
-from routines.faratel import download_faratel_screenshot
+from routines.skylinewebcams import download_skyline
+from routines.webcamimage import download_webcam
+from routines.dynamicjpg import download_dynamicjpg
+from routines.youtube import download_youtube
+from routines.faratel import download_faratel
+from routines.redspira import download_redspira
+from routines.snerpa import download_snerpa
+from routines.kt import download_kt
+from routines.livechina import download_livechina
+from routines.rt import download_rt
+from routines.ufanet import download_ufanet
 
 output_folder = "img"
 os.makedirs(output_folder, exist_ok=True)
@@ -25,7 +31,13 @@ def load_cameras_from_json():
         data.get("skylinewebcams", []),
         data.get("webcamimage", []),
         data.get("dynamicjpg", []),
-        data.get("youtube", [])
+        data.get("youtube", []),
+        data.get("redspira", []),
+        data.get("snerpa", []),
+        data.get("kt", []),
+        data.get("livechina", []),
+        data.get("rt", []),
+        data.get("ufanet", []),
     )
 
 def format_utc(i):
@@ -70,7 +82,13 @@ class WebcamApp:
             self.skylinewebcamsUrls,
             self.webcamimageUrls,
             self.dynamicjpgUrls,
-            self.youtubeVideos
+            self.youtubeVideos,
+            self.redspiraUrls,
+            self.snerpaUrls,
+            self.ktUrls,
+            self.livechinaUrls,
+            self.rtUrls,
+            self.ufanetUrls,
         ) = load_cameras_from_json()
 
         self.left_frame = tk.Frame(root)
@@ -97,9 +115,12 @@ class WebcamApp:
         tk.Button(self.btn_frame, text="Select All", width=btn_width, command=self.select_all).pack(side=tk.TOP, pady=5)
         tk.Button(self.btn_frame, text="Deselect All", width=btn_width, command=self.deselect_all).pack(side=tk.TOP, pady=5)
         tk.Button(self.btn_frame, text="Clear History", width=btn_width, command=self.clear_history).pack(side=tk.TOP, pady=5)
+
         tk.Button(self.btn_frame, text="Latest", width=btn_width, command=self.show_latest_images).pack(side=tk.TOP, pady=5)
         tk.Button(self.btn_frame, text="Default", width=btn_width, command=self.show_default_images).pack(side=tk.TOP, pady=5)
-        self.mask_btn = tk.Button(self.btn_frame, text="Mask: OFF", width=btn_width, command=self.toggle_mask)
+
+        # Mask button (always shows "Mask")
+        self.mask_btn = tk.Button(self.btn_frame, text="Mask", width=btn_width, command=self.toggle_mask)
         self.mask_btn.pack(side=tk.TOP, pady=5)
 
         tk.Button(self.btn_frame, text="Export Merge", width=btn_width, command=self.export_merge).pack(side=tk.TOP, pady=5)
@@ -113,12 +134,23 @@ class WebcamApp:
         self.mask_state = False
         self.item_dict = {}
 
+        # Per-slot mode: 'latest' or 'default'
+        self.slot_mode = {}
+        # Export checkbox per slot
+        self.export_items = {}
+
         all_items = (
             self.faratelUrls
             + self.skylinewebcamsUrls
             + self.webcamimageUrls
             + self.dynamicjpgUrls
             + self.youtubeVideos
+            + self.redspiraUrls
+            + self.snerpaUrls
+            + self.ktUrls
+            + self.livechinaUrls
+            + self.rtUrls
+            + self.ufanetUrls
         )
         self.item_dict = {it["id"]: it for it in all_items}
         self.all_utc_ids = [format_utc(i) for i in range(-11, 13)]
@@ -126,8 +158,14 @@ class WebcamApp:
         for u in self.all_utc_ids:
             if u not in self.item_dict:
                 self.item_dict[u] = {"id": u, "url": None}
+            # Active checkbox
             self.selected_items[u] = tk.BooleanVar(value=bool(self.item_dict[u]["url"]))
+            # Export checkbox
+            self.export_items[u] = tk.BooleanVar(value=bool(self.item_dict[u]["url"]))
+            # Default slot_mode is 'latest'
+            self.slot_mode[u] = "latest"
 
+        # Global mode: 'latest' or 'default'
         self.current_mode = "latest"
         self.load_images()
 
@@ -143,11 +181,13 @@ class WebcamApp:
         for u in self.all_utc_ids:
             if self.item_dict[u]["url"]:
                 self.selected_items[u].set(True)
+                self.export_items[u].set(True)
         self.load_images()
 
     def deselect_all(self):
         for u in self.all_utc_ids:
             self.selected_items[u].set(False)
+            self.export_items[u].set(False)
         self.load_images()
 
     def run_bot(self):
@@ -167,8 +207,10 @@ class WebcamApp:
                     if newfile:
                         self.set_frame_color(u, "#00FF00")  # New image => green
                     else:
-                        # No new file => if not set, lightgray
-                        if u not in self.frame_colors:
+                        # fallback color
+                        if self.slot_mode[u] == "latest":
+                            self.set_frame_color(u, "#A9A9A9")
+                        else:
                             self.set_frame_color(u, "#D3D3D3")
                 self.update_cell(u)
                 self.root.update_idletasks()
@@ -192,6 +234,18 @@ class WebcamApp:
                 return self.download_dynamicjpg(it)
             elif i in [x["id"] for x in self.youtubeVideos]:
                 return self.download_youtube(it)
+            elif i in [x["id"] for x in self.redspiraUrls]:
+                return self.download_redspira(it)
+            elif i in [x["id"] for x in self.snerpaUrls]:
+                return self.download_snerpa(it)
+            elif i in [x["id"] for x in self.ktUrls]:
+                return self.download_kt(it)
+            elif i in [x["id"] for x in self.livechinaUrls]:
+                return self.download_livechina(it)
+            elif i in [x["id"] for x in self.rtUrls]:
+                return self.download_rt(it)
+            elif i in [x["id"] for x in self.ufanetUrls]:
+                return self.download_ufanet(it)
             else:
                 return (False, False)
         except Exception as e:
@@ -211,22 +265,22 @@ class WebcamApp:
 
     def download_faratel(self, it):
         prev = set(os.listdir(output_folder))
-        res = download_faratel_screenshot(it["url"], it["id"])
+        res = download_faratel(it["url"], it["id"])
         return self.check_new_file(it["id"], res, prev, "Faratel")
 
     def download_skyline(self, it):
         prev = set(os.listdir(output_folder))
-        res = download_skyline_screenshot(it["url"], it["id"])
+        res = download_skyline(it["url"], it["id"])
         return self.check_new_file(it["id"], res, prev, "Skyline")
 
     def download_webcamimage(self, it):
         prev = set(os.listdir(output_folder))
-        res = download_webcam_image(it["url"], it["id"])
+        res = download_webcam(it["url"], it["id"])
         return self.check_new_file(it["id"], res, prev, "Webcam")
 
     def download_dynamicjpg(self, it):
         prev = set(os.listdir(output_folder))
-        res = download_dynamic_jpg(
+        res = download_dynamicjpg(
             url=it["url"],
             element_id=it.get("id"),
             element_class=it.get("class"),
@@ -237,14 +291,47 @@ class WebcamApp:
 
     def download_youtube(self, it):
         prev = set(os.listdir(output_folder))
-        res = download_youtube_screenshot(it["url"], it["id"])
+        res = download_youtube(it["url"], it["id"])
         return self.check_new_file(it["id"], res, prev, "YouTube")
 
+    def download_redspira(self, it):
+        prev = set(os.listdir(output_folder))
+        res = download_redspira(it["url"], it["id"])
+        return self.check_new_file(it["id"], res, prev, "redspira")
+      
+    def download_snerpa(self, it):
+        prev = set(os.listdir(output_folder))
+        res = download_snerpa(it["url"], it["id"])
+        return self.check_new_file(it["id"], res, prev, "snerpa")
+    
+    def download_kt(self, it):
+        prev = set(os.listdir(output_folder))
+        res = download_kt(it["url"], it["id"])
+        return self.check_new_file(it["id"], res, prev, "KT")
+
+    def download_livechina(self, it):
+        prev = set(os.listdir(output_folder))
+        res = download_livechina(it["url"], it["id"])
+        return self.check_new_file(it["id"], res, prev, "LiveChina")
+
+    def download_rt(self, it):
+        prev = set(os.listdir(output_folder))
+        res = download_rt(it["url"], it["id"])
+        return self.check_new_file(it["id"], res, prev, "RT")
+
+    def download_ufanet(self, it):
+        prev = set(os.listdir(output_folder))
+        res = download_ufanet(it["url"], it["id"])
+        return self.check_new_file(it["id"], res, prev, "Ufanet")
+
     def reload_image(self, it):
+        """If slot is in 'default', switch it to 'latest' just for that slot."""
         u = it["id"]
         if not it.get("url"):
             self.log(f"No URL for {u}, skipping reload")
             return
+
+        self.slot_mode[u] = "latest"
 
         self.set_frame_color(u, "#00FFFF")
         self.root.update_idletasks()
@@ -256,8 +343,11 @@ class WebcamApp:
             if newf:
                 self.set_frame_color(u, "#00FF00")
             else:
-                if u not in self.frame_colors:
+                if self.slot_mode[u] == "latest":
+                    self.set_frame_color(u, "#A9A9A9")
+                else:
                     self.set_frame_color(u, "#D3D3D3")
+
         self.update_cell(u)
         self.root.update_idletasks()
 
@@ -273,25 +363,26 @@ class WebcamApp:
             self.create_cell(utc, r, c)
 
     def create_cell(self, utcid, row, col):
-        if self.current_mode == "latest":
-            default_color = "#A9A9A9"  # darkgray
+        # Decide color based on slot_mode
+        if self.slot_mode[utcid] == "default":
+            color = "#D3D3D3"
         else:
-            default_color = "#D3D3D3"  # lightgray
+            color = "#A9A9A9"
 
         cell = tk.Frame(
             self.container,
             bd=2,
             highlightthickness=2,
-            highlightbackground=default_color,
-            highlightcolor=default_color
+            highlightbackground=color,
+            highlightcolor=color
         )
         cell.grid(row=row, column=col, padx=5, pady=5, sticky="nw")
         self.cell_frames[utcid] = cell
 
-        # If a custom color is set, apply it
+        # If a custom color is set, override
         if utcid in self.frame_colors:
-            color = self.frame_colors[utcid]
-            cell.config(highlightbackground=color, highlightcolor=color)
+            c_ = self.frame_colors[utcid]
+            cell.config(highlightbackground=c_, highlightcolor=c_)
 
         self.update_cell(utcid)
 
@@ -313,28 +404,64 @@ class WebcamApp:
             lbl_img.config(cursor="hand2")
             lbl_img.bind("<Button-1>", lambda e: self.open_full_image(it))
         else:
-            # Empty slot => frame color lightgray
+            # If empty slot => fallback color
             if utcid not in self.frame_colors:
-                self.set_frame_color(utcid, "#D3D3D3")
+                if self.slot_mode[utcid] == "latest":
+                    self.set_frame_color(utcid, "#A9A9A9")
+                else:
+                    self.set_frame_color(utcid, "#D3D3D3")
 
         tk.Label(cell, text=filename_shown).pack(side=tk.TOP, pady=2)
 
         row_line = tk.Frame(cell)
         row_line.pack(side=tk.TOP, pady=2)
 
+        # Active checkbox
         cb_state = "normal" if it["url"] else "disabled"
-        cb = tk.Checkbutton(row_line, text="Active", variable=self.selected_items[utcid], state=cb_state)
-        cb.pack(side=tk.LEFT, padx=3)
+        active_cb = tk.Checkbutton(
+            row_line, text="Active",
+            variable=self.selected_items[utcid],
+            state=cb_state,
+            command=lambda: self.on_active_changed(utcid)
+        )
+        active_cb.pack(side=tk.LEFT, padx=3)
 
+        # Reload button
         rb_state = "normal" if it["url"] else "disabled"
         rb = tk.Button(row_line, text="Reload", command=lambda i=it: self.reload_image(i), state=rb_state)
         rb.pack(side=tk.LEFT, padx=3)
 
+        # Export checkbox
+        export_cb = tk.Checkbutton(
+            row_line, text="Export",
+            variable=self.export_items[utcid],
+            state=cb_state
+        )
+        # If slot not active, export is disabled
+        if not self.selected_items[utcid].get():
+            export_cb.config(state="disabled")
+            self.export_items[utcid].set(False)
+        export_cb.pack(side=tk.LEFT, padx=3)
+
+        # Link on separate line
         if it["url"]:
-            link_lbl = tk.Label(row_line, text="Link", fg="blue", cursor="hand2")
+            link_line = tk.Frame(cell)
+            link_line.pack(side=tk.TOP, pady=2)
+            link_lbl = tk.Label(link_line, text="Link", fg="blue", cursor="hand2")
             link_lbl.pack(side=tk.LEFT, padx=3)
             link_lbl.bind("<Button-1>", lambda e, url=it["url"]: webbrowser.open(url))
             Tooltip(link_lbl, it["url"])
+
+    def on_active_changed(self, utcid):
+        """Sync the export checkbox with the Active checkbox."""
+        if self.selected_items[utcid].get():
+            # slot is active => re-enable export checkbox
+            self.export_items[utcid].set(True)
+            self.update_cell(utcid)
+        else:
+            # slot is inactive => uncheck export and disable it
+            self.export_items[utcid].set(False)
+            self.update_cell(utcid)
 
     def get_cell_image_and_label(self, it, w, h):
         if not os.path.exists(output_folder):
@@ -345,10 +472,7 @@ class WebcamApp:
         if not flist:
             return self.create_placeholder(w, h, it["id"]), it["id"]
 
-        if self.current_mode == "latest":
-            chosen = sorted(flist, reverse=True)[0]
-            full_path = os.path.join(output_folder, chosen)
-        else:
+        if self.slot_mode[it["id"]] == "default":
             default_path = os.path.join(output_folder, "default")
             pattern = it["id"] + "_"
             candidates = []
@@ -360,6 +484,9 @@ class WebcamApp:
             else:
                 chosen = sorted(flist, reverse=True)[0]
                 full_path = os.path.join(output_folder, chosen)
+        else:
+            chosen = sorted(flist, reverse=True)[0]
+            full_path = os.path.join(output_folder, chosen)
 
         try:
             pil_img = Image.open(full_path).convert("RGBA")
@@ -451,16 +578,28 @@ class WebcamApp:
         return img
 
     def show_latest_images(self):
+        """Force all slots to 'latest'."""
         self.current_mode = "latest"
+        for u in self.all_utc_ids:
+            self.slot_mode[u] = "latest"
+            self.set_frame_color(u, "#A9A9A9")
         self.load_images()
 
     def show_default_images(self):
+        """Force all slots to 'default', overriding reload-based 'latest'."""
         self.current_mode = "default"
+        for u in self.all_utc_ids:
+            self.slot_mode[u] = "default"
+            self.set_frame_color(u, "#D3D3D3")
         self.load_images()
 
     def toggle_mask(self):
+        """Toggle mask on/off. Button text stays 'Mask'."""
         self.mask_state = not self.mask_state
-        self.mask_btn.config(text=f"Mask: {'ON' if self.mask_state else 'OFF'}")
+        if self.mask_state:
+            self.mask_btn.config(relief=tk.SUNKEN)
+        else:
+            self.mask_btn.config(relief=tk.RAISED)
         self.load_images()
 
     def apply_mask_to_pil(self, utcid, base_pil):
@@ -480,27 +619,30 @@ class WebcamApp:
         return merged
 
     def export_merge(self):
-        """Exports merged images (only if mask exists) as PNG."""
+        """Export merged images if 'Export' is checked and a mask exists."""
         merge_dir = os.path.join(output_folder, "merge")
         os.makedirs(merge_dir, exist_ok=True)
 
         for utc in self.all_utc_ids:
+            if not self.export_items[utc].get():
+                continue
             it = self.item_dict[utc]
             if not self.has_local_file(it["id"]):
                 continue
-            # Check if a mask is present
+            # Check mask
             mask_path = os.path.join(output_folder, "mask")
             mask_filename = f"{it['id']}_mask.png".replace(":", "")
             mask_full = os.path.join(mask_path, mask_filename)
             if not os.path.exists(mask_full):
-                continue  # no mask => skip
+                continue
 
             prefix = it["id"] + "_"
             flist = [f for f in os.listdir(output_folder) if f.startswith(prefix)]
             if not flist:
                 continue
 
-            if self.current_mode == "default":
+            # Decide which file to merge
+            if self.slot_mode[it["id"]] == "default":
                 default_path = os.path.join(output_folder, "default")
                 if os.path.exists(default_path):
                     candidates = [f for f in os.listdir(default_path) if f.startswith(prefix)]
@@ -526,7 +668,6 @@ class WebcamApp:
             if not merged:
                 continue
 
-            # always export as .png
             name, _ = os.path.splitext(chosen)
             out_name = f"{name}_merge.png"
             out_path = os.path.join(merge_dir, out_name)
