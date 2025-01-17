@@ -14,7 +14,9 @@ from routines.snerpa import download_snerpa
 from routines.kt import download_kt
 from routines.livechina import download_livechina
 from routines.rt import download_rt
+from routines.rtsp import download_rtsp
 from routines.ufanet import download_ufanet
+#from routines.windy import download_windy
 
 output_folder = "img"
 os.makedirs(output_folder, exist_ok=True)
@@ -34,7 +36,9 @@ camera_routines = {
   "kt":           ("kt",           download_kt),
   "livechina":    ("livechina",    download_livechina),
   "rt":           ("rt",           download_rt),
+  "rtsp":         ("rtsp",         download_rtsp),
   "ufanet":       ("ufanet",       download_ufanet),
+  #"windy":        ("windy",        download_windy),
 }
 
 # Global dict to store the final mapping from "routine_name" -> (list_of_items, download_func)
@@ -73,7 +77,7 @@ def dispatch_download(item, logger):
     if any(x["id"] == item_id for x in cam_list):
       try:
         # If routine_name is dynamicjpg or webcamimage, we may pass extra parameters
-        if routine_name == "dynamicjpg":
+        if routine_name == "dynamicjpg" or routine_name == "windy":
           src_pattern = item.get("src", None)
           element_class = item.get("class", None)
           res = download_func(
