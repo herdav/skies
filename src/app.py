@@ -1,17 +1,25 @@
 # app.py
 
 import os
+import shutil
 import webbrowser
 import tkinter as tk
+import threading
+from tkinter import simpledialog
 from PIL import Image, ImageTk, ImageDraw, ImageFont
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from cams import load_cameras_from_json, register_downloads, dispatch_download, format_utc
 
 output_folder = "img"
 os.makedirs(output_folder, exist_ok=True)
 
+# We also keep a dedicated folder for the latest images.
+latest_folder = os.path.join(output_folder, "latest")
+os.makedirs(latest_folder, exist_ok=True)
+
 class Tooltip:
+  # Simple tooltip for UI elements.
   def __init__(self, widget, text):
     self.widget = widget
     self.text = text
@@ -34,7 +42,7 @@ class Tooltip:
       self.tip = None
 
 class WebcamApp:
-  """Main window."""
+  """Main window for controlling webcam downloads and displaying images."""
   def __init__(self, root):
     self.root = root
     self.root.title("globalWebCams")
@@ -42,13 +50,11 @@ class WebcamApp:
     screen_w = self.root.winfo_screenwidth()
     self.root.geometry(f"{screen_w}x900+0+0")
 
-    # Load entire JSON once
+    # Load camera data from JSON and register routines
     data = load_cameras_from_json()
-    # Register all camera routines in a dictionary
     register_downloads(data)
 
-    # Merge all items from the JSON into a single list for the GUI
-    # We only want lists from data that are actually arrays
+    # Flatten all lists from the JSON into a single dictionary
     all_items = []
     for val in data.values():
       if isinstance(val, list):
@@ -56,6 +62,7 @@ class WebcamApp:
 
     self.item_dict = {it["id"]: it for it in all_items}
 
+    # Build main frames
     self.left_frame = tk.Frame(root)
     self.left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
@@ -69,26 +76,60 @@ class WebcamApp:
     self.right_frame = tk.Frame(root)
     self.right_frame.pack(side=tk.RIGHT, fill=tk.Y, expand=False)
 
+    # Logging
     self.log_text = tk.Text(self.right_frame, width=40)
     self.log_text.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
+    # Button area
     self.btn_frame = tk.Frame(self.right_frame)
     self.btn_frame.pack(side=tk.TOP, pady=10)
-
     btn_width = 15
-    tk.Button(self.btn_frame, text="Run All Selected", width=btn_width, command=self.run_bot).pack(side=tk.TOP, pady=5)
-    tk.Button(self.btn_frame, text="Select All", width=btn_width, command=self.select_all).pack(side=tk.TOP, pady=5)
-    tk.Button(self.btn_frame, text="Deselect All", width=btn_width, command=self.deselect_all).pack(side=tk.TOP, pady=5)
-    tk.Button(self.btn_frame, text="Clear History", width=btn_width, command=self.clear_history).pack(side=tk.TOP, pady=5)
 
-    tk.Button(self.btn_frame, text="Latest", width=btn_width, command=self.show_latest_images).pack(side=tk.TOP, pady=5)
-    tk.Button(self.btn_frame, text="Default", width=btn_width, command=self.show_default_images).pack(side=tk.TOP, pady=5)
+    # Row 0
+    self.btn_run_all = tk.Button(self.btn_frame, text="Run All Selected", width=2*btn_width,
+                                 command=self.on_run_all_clicked)
+    self.btn_run_all.grid(row=0, column=0, columnspan=2, pady=5, padx=5)
 
+    # Row 1
+    self.btn_deselect_all = tk.Button(self.btn_frame, text="Deselect All", width=btn_width,
+                                      command=self.deselect_all)
+    self.btn_deselect_all.grid(row=1, column=0, pady=5, padx=5)
+    self.btn_select_all = tk.Button(self.btn_frame, text="Select All", width=btn_width,
+                                    command=self.select_all)
+    self.btn_select_all.grid(row=1, column=1, pady=5, padx=5)
+
+    # Row 2
+    self.latest_btn = tk.Button(self.btn_frame, text="Latest", width=btn_width,
+                                command=self.show_latest_images)
+    self.latest_btn.grid(row=2, column=0, pady=5, padx=5)
+    self.default_btn = tk.Button(self.btn_frame, text="Default", width=btn_width,
+                                 command=self.show_default_images)
+    self.default_btn.grid(row=2, column=1, pady=5, padx=5)
+
+    # Row 3
     self.mask_btn = tk.Button(self.btn_frame, text="Mask", width=btn_width, command=self.toggle_mask)
-    self.mask_btn.pack(side=tk.TOP, pady=5)
+    self.mask_btn.grid(row=3, column=0, pady=5, padx=5)
+    self.btn_export_merge = tk.Button(self.btn_frame, text="Export Merge", width=btn_width,
+                                      command=self.export_merge)
+    self.btn_export_merge.grid(row=3, column=1, pady=5, padx=5)
 
-    tk.Button(self.btn_frame, text="Export Merge", width=btn_width, command=self.export_merge).pack(side=tk.TOP, pady=5)
+    # Row 4
+    self.btn_autorun = tk.Button(self.btn_frame, text="Auto Run", width=2*btn_width,
+                                 command=self.on_autorun_clicked)
+    self.btn_autorun.grid(row=4, column=0, columnspan=2, pady=5, padx=5)
 
+    # Row 5
+    self.btn_quit = tk.Button(self.btn_frame, text="Quit", width=btn_width, command=self.on_quit_clicked)
+    self.btn_quit.grid(row=5, column=0, pady=5, padx=5)
+    self.btn_clear_history = tk.Button(self.btn_frame, text="Clear History", width=btn_width,
+                                       command=self.clear_history)
+    self.btn_clear_history.grid(row=5, column=1, pady=5, padx=5)
+
+    # Label for time left (red text)
+    self.lbl_time_left = tk.Label(self.btn_frame, text="", fg="red")
+    self.lbl_time_left.grid(row=6, column=0, columnspan=2, pady=5, padx=5)
+
+    # Internal variables
     self.photo_images = {}
     self.selected_items = {}
     self.download_times = {}
@@ -96,36 +137,64 @@ class WebcamApp:
     self.frame_colors = {}
     self.original_pil_images = {}
     self.mask_state = False
-
     self.slot_mode = {}
     self.export_items = {}
 
-    # For the timezones - or any other "UTC±X" slots we want to show
+    self.auto_run_active = False
+    self.auto_run_end_dt = None
+    self.cycle_seconds = 120
+    self.run_count = 0
+    self.last_run_folder_time = None
+
+    # Prepare UTC IDs
     self.all_utc_ids = [format_utc(i) for i in range(-11, 13)]
-    # Mark them in item_dict if not present
     for u in self.all_utc_ids:
       if u not in self.item_dict:
         self.item_dict[u] = {"id": u, "url": None}
 
-    # Initialize selected_items and export_items
     for u in self.all_utc_ids:
       self.selected_items[u] = tk.BooleanVar(value=bool(self.item_dict[u]["url"]))
       self.export_items[u] = tk.BooleanVar(value=bool(self.item_dict[u]["url"]))
       self.slot_mode[u] = "latest"
 
     self.current_mode = "latest"
+    self.latest_btn.config(relief=tk.SUNKEN)
+    self.default_btn.config(relief=tk.RAISED)
+
+    # Worker thread reference
+    self.worker_thread = None
+
     self.load_images()
 
+  # Logging
   def log(self, msg):
-    """Log the message in the text widget."""
+    """Writes a message into the log text widget."""
     self.log_text.insert(tk.END, msg + "\n")
     self.log_text.see(tk.END)
 
   def clear_history(self):
+    """Clears the log text."""
     self.log_text.delete("1.0", tk.END)
     self.log("History cleared")
 
+  # Thread-safe UI calls
+  def safe_log(self, msg):
+    self.root.after(0, lambda: self.log(msg))
+
+  def safe_set_frame_color(self, utcid, color):
+    self.root.after(0, lambda: self.set_frame_color(utcid, color))
+
+  def safe_update_cell(self, utcid):
+    self.root.after(0, lambda: self.update_cell(utcid))
+
+  # Quit button
+  def on_quit_clicked(self):
+    """Closes the application window."""
+    self.root.destroy()
+
+  # Select / Deselect
   def select_all(self):
+    """Sets all URLs to active/export."""
     for u in self.all_utc_ids:
       if self.item_dict[u]["url"]:
         self.selected_items[u].set(True)
@@ -133,72 +202,211 @@ class WebcamApp:
     self.load_images()
 
   def deselect_all(self):
+    """Deactivates all camera slots."""
     for u in self.all_utc_ids:
       self.selected_items[u].set(False)
       self.export_items[u].set(False)
     self.load_images()
 
+  # Run all downloads
+  def on_run_all_clicked(self):
+    """Starts a new run if not already running, creates a timestamped folder, and spawns the worker."""
+    now_dt = datetime.now()
+    if self.last_run_folder_time is not None:
+      delta = now_dt - self.last_run_folder_time
+      real_cycle_sec = delta.total_seconds()
+      self.log(f"Real cycle time: {real_cycle_sec:.1f} seconds since last folder.")
+    self.last_run_folder_time = now_dt
+
+    now_str = now_dt.strftime("%Y%m%d_%H%M%S")
+    self.run_folder = os.path.join(output_folder, now_str)
+    os.makedirs(self.run_folder, exist_ok=True)
+
+    self.log(f"Run started, images or error logs will be stored in: {self.run_folder}")
+
+    if self.worker_thread and self.worker_thread.is_alive():
+      self.log("Downloads are already in progress...")
+      return
+
+    self.worker_thread = threading.Thread(target=self.run_bot, daemon=True)
+    self.worker_thread.start()
+
   def run_bot(self):
-    """Loop through all selected items and dispatch their download."""
+    """Performs the download for each selected item in a background thread."""
+    self.run_count += 1
+    line_no = f"{self.run_count:04d}"
+    current_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if self.auto_run_active:
+      cycle_info = f"{int(self.cycle_seconds)}s-cycle + maskCheck"
+    else:
+      cycle_info = "manual-run"
+
+    self.safe_log(f"{line_no} {current_ts} {cycle_info}")
+
     for u in self.all_utc_ids:
       if self.selected_items[u].get():
         it = self.item_dict[u]
         if not it.get("url"):
-          self.log(f"No URL for {u}, skipping")
+          self.safe_log(f"No URL for {u}, skipping")
           continue
 
-        ok, newfile = dispatch_download(it, self.log)
+        # Cyan border to show active download
+        self.safe_set_frame_color(u, "#00FFFF")
+
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        potential_jpg_name = f"{it['id']}_{timestamp_str}.jpg"
+        potential_jpg_path = os.path.join(self.run_folder, potential_jpg_name)
+
+        ok, newfile, local_file = self.dispatch_with_path(it)
         if not ok:
-          self.set_frame_color(u, "#FF0000")  # Error
+          self.safe_set_frame_color(u, "#FF0000")
+          error_msg = f"Download failed for {it['id']} => {potential_jpg_name}"
+          self.safe_log(error_msg)
+          error_txt_path = os.path.splitext(potential_jpg_path)[0] + ".txt"
+          try:
+            with open(error_txt_path, "w", encoding="utf-8") as f:
+              f.write(error_msg + "\n")
+          except:
+            pass
         else:
+          # If download was successful
           if newfile:
-            self.set_frame_color(u, "#00FF00")  # New image => green
+            self.safe_set_frame_color(u, "#00FF00")
           else:
             if self.slot_mode[u] == "latest":
-              self.set_frame_color(u, "#A9A9A9")
+              self.safe_set_frame_color(u, "#A9A9A9")
             else:
-              self.set_frame_color(u, "#D3D3D3")
+              self.safe_set_frame_color(u, "#D3D3D3")
 
-        self.update_cell(u)
-        # Force GUI update so user sees each slot update
-        self.root.update_idletasks()
+          if local_file:
+            base_name = os.path.basename(local_file)
+            new_path = os.path.join(self.run_folder, base_name)
+            if local_file != new_path:
+              try:
+                shutil.move(local_file, new_path)
+              except Exception as e:
+                self.safe_log(f"Cannot move file {local_file} to {new_path}: {e}")
+                new_path = local_file
 
-  def set_frame_color(self, utcid, color):
-    """Update frame color for a given slot."""
-    self.frame_colors[utcid] = color
-    c = self.cell_frames.get(utcid)
-    if c:
-      c.config(highlightthickness=2, highlightbackground=color, highlightcolor=color)
+            # Auto-run + Mask => also create a merged image in the timestamped folder
+            if self.auto_run_active and self.mask_state and os.path.exists(new_path):
+              try:
+                self.save_masked_variant(it["id"], new_path)
+              except Exception as me:
+                self.safe_log(f"Error creating masked image {new_path}: {me}")
 
+            # Also put/copy a version in the "latest" folder
+            self.write_latest_variant(it["id"], new_path)
+
+        self.safe_update_cell(u)
+
+  def save_masked_variant(self, item_id, file_path):
+    """Creates a merged mask image from file_path and stores it as _merge.png."""
+    from PIL import Image
+    base_img = Image.open(file_path).convert("RGBA")
+    merged = self.apply_mask_to_pil(item_id, base_img)
+    if merged:
+      name, _ = os.path.splitext(file_path)
+      out_path = name + "_merge.png"
+      merged.save(out_path, "PNG")
+      self.safe_log(f"Mask merged saved: {out_path}")
+
+  def write_latest_variant(self, item_id, timestamped_path):
+    """
+    Copies the new timestamped file into the 'latest' folder.
+    Removes any old version for this item first (so only one file per item remains).
+    """
+    # Remove old files with same prefix
+    old_files = [f for f in os.listdir(latest_folder) if f.startswith(item_id + "_")]
+    for oldf in old_files:
+      try:
+        os.remove(os.path.join(latest_folder, oldf))
+      except:
+        pass
+
+    # Copy or move the new file
+    base = os.path.basename(timestamped_path)
+    dest = os.path.join(latest_folder, base)
+    try:
+      shutil.copy2(timestamped_path, dest)
+      self.safe_log(f"Latest copy created: {dest}")
+    except Exception as e:
+      self.safe_log(f"Could not copy to latest: {e}")
+
+  def dispatch_with_path(self, item):
+    """Calls the download routine and determines the local file path."""
+    item_id = item["id"]
+    prev_files = set(os.listdir(output_folder))
+
+    ok, new_file = dispatch_download(item, self.safe_log)
+    local_file_path = None
+
+    if ok:
+      new_set = set(os.listdir(output_folder)) - prev_files
+      found_file = None
+      for nf in new_set:
+        if nf.startswith(item_id + "_"):
+          found_file = nf
+          break
+      if found_file:
+        local_file_path = os.path.join(output_folder, found_file)
+      else:
+        matches = [f for f in os.listdir(output_folder) if f.startswith(item_id + "_")]
+        if matches:
+          chosen = sorted(matches, reverse=True)[0]
+          local_file_path = os.path.join(output_folder, chosen)
+
+    return (ok, new_file, local_file_path)
+
+  # Reload single image
   def reload_image(self, it):
-    """Reload an individual slot."""
+    """Spawns a background thread to reload a single camera slot."""
+    threading.Thread(target=self.reload_image_worker, args=(it,), daemon=True).start()
+
+  def reload_image_worker(self, it):
+    """Download logic for the single reload in a background thread."""
     u = it["id"]
     if not it.get("url"):
-      self.log(f"No URL for {u}, skipping reload")
+      self.safe_log(f"No URL for {u}, skipping reload")
       return
-
     self.slot_mode[u] = "latest"
+    self.safe_set_frame_color(u, "#00FFFF")
 
-    self.set_frame_color(u, "#00FFFF")
-    self.root.update_idletasks()
-
-    ok, newf = dispatch_download(it, self.log)
+    ok, newf, local_file = self.dispatch_with_path(it)
     if not ok:
-      self.set_frame_color(u, "#FF0000")
+      self.safe_set_frame_color(u, "#FF0000")
     else:
       if newf:
-        self.set_frame_color(u, "#00FF00")
+        self.safe_set_frame_color(u, "#00FF00")
       else:
         if self.slot_mode[u] == "latest":
-          self.set_frame_color(u, "#A9A9A9")
+          self.safe_set_frame_color(u, "#A9A9A9")
         else:
-          self.set_frame_color(u, "#D3D3D3")
+          self.safe_set_frame_color(u, "#D3D3D3")
 
-    self.update_cell(u)
-    self.root.update_idletasks()
+      if local_file:
+        # Also copy to latest
+        stamp_name = os.path.basename(local_file)
+        dest_name = os.path.join(latest_folder, stamp_name)
+        # Remove old one first
+        old_files = [f for f in os.listdir(latest_folder) if f.startswith(u + "_")]
+        for oldf in old_files:
+          try:
+            os.remove(os.path.join(latest_folder, oldf))
+          except:
+            pass
 
+        try:
+          shutil.copy2(local_file, dest_name)
+          self.safe_log(f"Latest copy updated: {dest_name}")
+        except Exception as e:
+          self.safe_log(f"Failed to copy to latest: {e}")
+
+    self.safe_update_cell(u)
+
+  # Building the grid
   def load_images(self):
-    """Re-create all cells in the container."""
+    """Clears and rebuilds the grid of camera slots."""
     for w in self.container.winfo_children():
       w.destroy()
     self.cell_frames.clear()
@@ -210,7 +418,7 @@ class WebcamApp:
       self.create_cell(utc, r, c)
 
   def create_cell(self, utcid, row, col):
-    """Create one cell in the grid."""
+    """Creates a cell (frame) for a single camera slot."""
     color = "#D3D3D3" if self.slot_mode[utcid] == "default" else "#A9A9A9"
     cell = tk.Frame(
       self.container,
@@ -229,7 +437,7 @@ class WebcamApp:
     self.update_cell(utcid)
 
   def update_cell(self, utcid):
-    """Update the content of one cell."""
+    """Updates the UI elements for a given camera slot (thumbnail, labels, etc.)."""
     cell = self.cell_frames.get(utcid)
     if not cell:
       return
@@ -238,11 +446,12 @@ class WebcamApp:
 
     it = self.item_dict[utcid]
     img, filename_shown = self.get_cell_image_and_label(it, 180, 120)
-
     self.photo_images[utcid] = img
+
     lbl_img = tk.Label(cell, image=img, bg="white")
     lbl_img.pack(side=tk.TOP, pady=2)
 
+    # Click to open full if available
     if self.has_local_file(it["id"]):
       lbl_img.config(cursor="hand2")
       lbl_img.bind("<Button-1>", lambda e: self.open_full_image(it))
@@ -281,6 +490,7 @@ class WebcamApp:
       self.export_items[utcid].set(False)
     export_cb.pack(side=tk.LEFT, padx=3)
 
+    # Link
     if it["url"]:
       link_line = tk.Frame(cell)
       link_line.pack(side=tk.TOP, pady=2)
@@ -290,42 +500,38 @@ class WebcamApp:
       Tooltip(link_lbl, it["url"])
 
   def on_active_changed(self, utcid):
-    """Sync export checkbox with the Active checkbox."""
+    """Handles checkbox changes for 'Active' -> also toggles 'Export'."""
     if self.selected_items[utcid].get():
       self.export_items[utcid].set(True)
-      self.update_cell(utcid)
     else:
       self.export_items[utcid].set(False)
-      self.update_cell(utcid)
+    self.update_cell(utcid)
 
   def get_cell_image_and_label(self, it, w, h):
-    """Return a thumbnail PhotoImage and filename or placeholder."""
-    if not os.path.exists(output_folder):
-      return self.create_placeholder(w, h, it["id"]), it["id"]
-
-    prefix = it["id"] + "_"
-    flist = [f for f in os.listdir(output_folder) if f.startswith(prefix)]
-    if not flist:
-      return self.create_placeholder(w, h, it["id"]), it["id"]
+    """Fetches the correct image for the cell, either from default or latest folder."""
+    # If slot mode is 'default', look in img/default
+    # If 'latest', look in img/latest
 
     if self.slot_mode[it["id"]] == "default":
       default_path = os.path.join(output_folder, "default")
-      pattern = it["id"] + "_"
-      candidates = []
-      if os.path.exists(default_path):
-        candidates = [f for f in os.listdir(default_path) if f.startswith(pattern)]
-      if candidates:
-        chosen = sorted(candidates, reverse=True)[0]
-        full_path = os.path.join(default_path, chosen)
-      else:
-        chosen = sorted(flist, reverse=True)[0]
-        full_path = os.path.join(output_folder, chosen)
+      prefix = it["id"] + "_"
+      if not os.path.exists(default_path):
+        return self.create_placeholder(w, h, it["id"]), it["id"]
+      candidates = [f for f in os.listdir(default_path) if f.startswith(prefix)]
+      if not candidates:
+        return self.create_placeholder(w, h, it["id"]), it["id"]
+      chosen = sorted(candidates, reverse=True)[0]
+      full_path = os.path.join(default_path, chosen)
     else:
+      # Latest mode
+      prefix = it["id"] + "_"
+      flist = [f for f in os.listdir(latest_folder) if f.startswith(prefix)]
+      if not flist:
+        return self.create_placeholder(w, h, it["id"]), it["id"]
       chosen = sorted(flist, reverse=True)[0]
-      full_path = os.path.join(output_folder, chosen)
+      full_path = os.path.join(latest_folder, chosen)
 
     try:
-      from PIL import Image
       pil_img = Image.open(full_path).convert("RGBA")
       self.original_pil_images[it["id"]] = pil_img.copy()
       if self.mask_state:
@@ -333,22 +539,18 @@ class WebcamApp:
         if masked:
           pil_img = masked
       pil_img.thumbnail((w, h), Image.LANCZOS)
-      from PIL import ImageTk
       return ImageTk.PhotoImage(pil_img), chosen
     except:
       return self.create_placeholder(w, h, it["id"]), it["id"]
 
   def has_local_file(self, utcid):
-    """Check if there's at least one file in output_folder matching the UTC ID prefix."""
-    if not os.path.exists(output_folder):
-      return False
+    """Checks if there's a 'latest' file for the given UTC ID."""
     prefix = utcid + "_"
-    flist = [f for f in os.listdir(output_folder) if f.startswith(prefix)]
+    flist = [f for f in os.listdir(latest_folder) if f.startswith(prefix)]
     return len(flist) > 0
 
   def create_placeholder(self, w, h, txt):
-    """Create a placeholder image."""
-    from PIL import Image, ImageDraw, ImageFont, ImageTk
+    """Creates a simple gray placeholder image with given text."""
     img = Image.new("RGB", (w, h), (220, 220, 220))
     d = ImageDraw.Draw(img)
     f = ImageFont.load_default()
@@ -359,8 +561,9 @@ class WebcamApp:
     return ImageTk.PhotoImage(img)
 
   def open_full_image(self, it):
-    """Show the full image in a separate Toplevel window."""
-    if not self.has_local_file(it["id"]):
+    """Opens a fullscreen window to display the chosen image in large size."""
+    u = it["id"]
+    if not self.has_local_file(u):
       return
     top = tk.Toplevel(self.root)
     top.attributes("-fullscreen", True)
@@ -370,12 +573,12 @@ class WebcamApp:
     lbl.pack(fill="both", expand=True)
     lbl.bind("<Button-1>", lambda e: top.destroy())
 
-    base_pil = self.original_pil_images.get(it["id"])
+    base_pil = self.original_pil_images.get(u)
     if not base_pil:
-      lbl.original_pil = self.create_placeholder_img(800, 600, it["id"])
+      lbl.original_pil = self.create_placeholder_img(800, 600, u)
     else:
       if self.mask_state:
-        masked = self.apply_mask_to_pil(it["id"], base_pil)
+        masked = self.apply_mask_to_pil(u, base_pil)
         if masked:
           lbl.original_pil = masked
         else:
@@ -391,18 +594,17 @@ class WebcamApp:
       if w_ < 1 or h_ < 1:
         return
       ow, oh = lbl.original_pil.size
-      r_img = ow / oh
-      r_fr = w_ / h_
-      if r_img > r_fr:
+      ratio_img = ow / oh
+      ratio_fr = w_ / h_
+      if ratio_img > ratio_fr:
         new_w = w_
-        new_h = int(new_w / r_img)
+        new_h = int(new_w / ratio_img)
       else:
         new_h = h_
-        new_w = int(new_h * r_img)
+        new_w = int(new_h * ratio_img)
       if new_w < 1: new_w = 1
       if new_h < 1: new_h = 1
 
-      from PIL import ImageTk
       scaled = lbl.original_pil.resize((new_w, new_h), Image.LANCZOS)
       lbl.image_tk = ImageTk.PhotoImage(scaled)
       lbl.config(image=lbl.image_tk)
@@ -412,8 +614,7 @@ class WebcamApp:
     on_resize(None)
 
   def create_placeholder_img(self, w, h, txt):
-    """Create placeholder for big image if base_pil is missing."""
-    from PIL import Image, ImageDraw, ImageFont
+    """Placeholder PIL image for fullscreen mode if no real image is found."""
     img = Image.new("RGB", (w, h), (220, 220, 220))
     d = ImageDraw.Draw(img)
     f = ImageFont.load_default()
@@ -423,24 +624,29 @@ class WebcamApp:
     d.text((x, y), txt, font=f, fill=(0, 0, 0))
     return img
 
+  # Toggle modes
   def show_latest_images(self):
-    """Force all slots to 'latest'."""
+    """Switches all slots to 'latest' mode and refreshes the grid."""
     self.current_mode = "latest"
+    self.latest_btn.config(relief=tk.SUNKEN)
+    self.default_btn.config(relief=tk.RAISED)
     for u in self.all_utc_ids:
       self.slot_mode[u] = "latest"
       self.set_frame_color(u, "#A9A9A9")
     self.load_images()
 
   def show_default_images(self):
-    """Force all slots to 'default'."""
+    """Switches all slots to 'default' mode and refreshes the grid."""
     self.current_mode = "default"
+    self.default_btn.config(relief=tk.SUNKEN)
+    self.latest_btn.config(relief=tk.RAISED)
     for u in self.all_utc_ids:
       self.slot_mode[u] = "default"
       self.set_frame_color(u, "#D3D3D3")
     self.load_images()
 
   def toggle_mask(self):
-    """Toggle mask on/off. Button text remains 'Mask'."""
+    """Toggles the mask overlay on/off and reloads the grid."""
     self.mask_state = not self.mask_state
     if self.mask_state:
       self.mask_btn.config(relief=tk.SUNKEN)
@@ -448,8 +654,17 @@ class WebcamApp:
       self.mask_btn.config(relief=tk.RAISED)
     self.load_images()
 
+  # UI coloring
+  def set_frame_color(self, utcid, color):
+    """Sets the frame highlight color for a given slot."""
+    self.frame_colors[utcid] = color
+    c = self.cell_frames.get(utcid)
+    if c:
+      c.config(highlightthickness=2, highlightbackground=color, highlightcolor=color)
+
+  # Mask logic
   def apply_mask_to_pil(self, utcid, base_pil):
-    """Apply a mask from 'mask' subfolder, if it exists."""
+    """If a mask file for this ID exists, merges it onto the base image."""
     mask_path = os.path.join(output_folder, "mask")
     if not os.path.exists(mask_path):
       return None
@@ -459,15 +674,15 @@ class WebcamApp:
       return None
 
     base_rgba = base_pil.copy().convert("RGBA")
-    from PIL import Image
     mask_img = Image.open(mask_full).convert("RGBA")
     if mask_img.size != base_rgba.size:
       mask_img = mask_img.resize(base_rgba.size, Image.LANCZOS)
     merged = Image.alpha_composite(base_rgba, mask_img)
     return merged
 
+  # Export merge
   def export_merge(self):
-    """Export merged images if Export is checked and mask exists."""
+    """Creates merged images for all 'Export' items in a 'merge' folder."""
     merge_dir = os.path.join(output_folder, "merge")
     os.makedirs(merge_dir, exist_ok=True)
 
@@ -475,39 +690,27 @@ class WebcamApp:
       if not self.export_items[utc].get():
         continue
       it = self.item_dict[utc]
-      if not self.has_local_file(it["id"]):
-        continue
-
-      mask_path = os.path.join(output_folder, "mask")
-      mask_filename = f"{it['id']}_mask.png".replace(":", "")
-      mask_full = os.path.join(mask_path, mask_filename)
-      if not os.path.exists(mask_full):
-        continue
-
       prefix = it["id"] + "_"
-      flist = [f for f in os.listdir(output_folder) if f.startswith(prefix)]
-      if not flist:
-        continue
 
+      # Check if there's a relevant file
       if self.slot_mode[it["id"]] == "default":
         default_path = os.path.join(output_folder, "default")
-        if os.path.exists(default_path):
-          candidates = [f for f in os.listdir(default_path) if f.startswith(prefix)]
-          if candidates:
-            chosen = sorted(candidates, reverse=True)[0]
-            full_path = os.path.join(default_path, chosen)
-          else:
-            chosen = sorted(flist, reverse=True)[0]
-            full_path = os.path.join(output_folder, chosen)
-        else:
-          chosen = sorted(flist, reverse=True)[0]
-          full_path = os.path.join(output_folder, chosen)
+        if not os.path.exists(default_path):
+          continue
+        candidates = [f for f in os.listdir(default_path) if f.startswith(prefix)]
+        if not candidates:
+          continue
+        chosen = sorted(candidates, reverse=True)[0]
+        full_path = os.path.join(default_path, chosen)
       else:
+        # latest
+        flist = [f for f in os.listdir(latest_folder) if f.startswith(prefix)]
+        if not flist:
+          continue
         chosen = sorted(flist, reverse=True)[0]
-        full_path = os.path.join(output_folder, chosen)
+        full_path = os.path.join(latest_folder, chosen)
 
       try:
-        from PIL import Image
         pil_img = Image.open(full_path).convert("RGBA")
       except:
         continue
@@ -524,3 +727,100 @@ class WebcamApp:
         self.log(f"Exported merged: {out_name}")
       except Exception as e:
         self.log(f"Export error {out_name}: {e}")
+
+  # Auto-run logic
+  def on_autorun_clicked(self):
+    """Toggle the auto-run feature and schedule the cycles."""
+    if not self.auto_run_active:
+      if not self.configure_auto_run_settings():
+        return
+      self.auto_run_active = True
+      self.btn_autorun.config(text="Stop", fg="red")
+      self.update_time_left()
+      self.on_run_all_clicked()
+      self.schedule_next_run()
+    else:
+      self.auto_run_active = False
+      self.btn_autorun.config(text="Auto Run", fg="black")
+      self.lbl_time_left.config(text="")
+
+  def configure_auto_run_settings(self):
+    """Prompts the user for cycle time and end datetime for auto-run."""
+    cycle_str = simpledialog.askstring(
+      "Auto-Run Settings",
+      "Cycle time in seconds:",
+      initialvalue=str(self.cycle_seconds),
+      parent=self.root
+    )
+    if cycle_str is None:
+      return False
+    try:
+      self.cycle_seconds = int(cycle_str)
+    except:
+      self.cycle_seconds = 120
+
+    default_end = (datetime.now() + timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+    end_str = simpledialog.askstring(
+      "Auto-Run Settings",
+      "End date/time (YYYY-MM-DD HH:MM:SS):",
+      initialvalue=default_end,
+      parent=self.root
+    )
+    if end_str is None:
+      return False
+
+    try:
+      self.auto_run_end_dt = datetime.strptime(end_str, "%Y-%m-%d %H:%M:%S")
+    except:
+      self.auto_run_end_dt = datetime.now() + timedelta(minutes=30)
+
+    return True
+
+  def schedule_next_run(self):
+    """Schedules the next auto-run cycle."""
+    if not self.auto_run_active:
+      return
+    now = datetime.now()
+    if now >= self.auto_run_end_dt:
+      self.log(f"Auto-run ended at {now}")
+      self.auto_run_active = False
+      self.btn_autorun.config(text="Auto Run", fg="black")
+      self.lbl_time_left.config(text="")
+      return
+
+    self.root.after(self.cycle_seconds * 1000, self.do_auto_run_cycle)
+
+  def do_auto_run_cycle(self):
+    """Performs the next auto-run cycle, if still active."""
+    if not self.auto_run_active:
+      return
+    now = datetime.now()
+    if now >= self.auto_run_end_dt:
+      self.log(f"Auto-run ended at {now}")
+      self.auto_run_active = False
+      self.btn_autorun.config(text="Auto Run", fg="black")
+      self.lbl_time_left.config(text="")
+      return
+
+    self.on_run_all_clicked()
+    self.schedule_next_run()
+    self.update_time_left()
+
+  def update_time_left(self):
+    """Updates the label showing remaining time for auto-run."""
+    if not self.auto_run_active:
+      self.lbl_time_left.config(text="")
+      return
+    now = datetime.now()
+    delta = self.auto_run_end_dt - now
+    if delta.total_seconds() < 0:
+      self.lbl_time_left.config(text="")
+      return
+
+    h, rem = divmod(int(delta.total_seconds()), 3600)
+    m, s = divmod(rem, 60)
+    time_str = f"{h:02d}:{m:02d}:{s:02d} left"
+    self.lbl_time_left.config(text=time_str)
+
+    if self.auto_run_active:
+      self.root.after(1000, self.update_time_left)
