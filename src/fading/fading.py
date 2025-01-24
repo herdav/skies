@@ -4,14 +4,14 @@ import os
 import re
 import time
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, ttk, simpledialog
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 
 # Filter / Reset
 
 BG_COLOR = "#dcdcdc"
 TEXT_BG_COLOR = (220, 220, 220, 255)
-PROXY_COLOR = (255, 0, 0, 255)  # red text for proxy images
+PROXY_COLOR = (255, 0, 0, 255)  # Red text for proxy images
 TEXT_COLOR = (0, 0, 0)
 TEXT_FONT_SIZE = 12
 
@@ -32,7 +32,7 @@ final_image = None
 boundary_positions = []
 filenames_at_boundaries = []
 
-# Crossfade for entire subfolders
+# For crossfade across subfolders (UI preview)
 crossfade_frames = []
 crossfade_index = 0
 crossfade_active = False
@@ -130,8 +130,14 @@ def set_mode(m):
 def update_navigation():
   if current_mode == MODE_SUBFOLDERS and len(subfolder_names) > 1:
     subfolder_combo.config(state="readonly")
-    prev_btn.config(state="normal")
-    next_btn.config(state="normal")
+    if subfolder_combo_idx > 0:
+      prev_btn.config(state="normal")
+    else:
+      prev_btn.config(state="disabled")
+    if subfolder_combo_idx < len(subfolder_names)-1:
+      next_btn.config(state="normal")
+    else:
+      next_btn.config(state="disabled")
   else:
     subfolder_combo.config(state="disabled")
     prev_btn.config(state="disabled")
@@ -243,7 +249,6 @@ def show_crossfade_frame():
 def prev_subfolder():
   global crossfade_active
   if crossfade_active:
-    # do nothing or we can just turn it off
     crossfade_active=False
     crossfade_frames.clear()
   idx = subfolder_combo_idx - 1
@@ -366,6 +371,10 @@ def parse_image_data_into_checkboxes(files_list):
     cont = tk.Frame(checkbox_frame, bg=BG_COLOR)
     cont.grid(row=0, column=c, sticky="nsew", padx=5)
 
+    # Instead of UTC..., use subdirectory name if single_dir or subfolders
+    # But user wants the name to start with the folder/subfolder plus index? 
+    # We'll do: <dir>_###. For single directory or subfolder
+    # If no directory, just do the prefix
     prefix = extract_utc_prefix(fpath)
     lbl1 = tk.Label(cont, text=prefix, bg=BG_COLOR)
     lbl1.pack(side="top", pady=1)
@@ -414,8 +423,9 @@ def load_subfolder_images(idx, auto_calc=False):
     cont = tk.Frame(checkbox_frame, bg=BG_COLOR)
     cont.grid(row=0, column=c, sticky="nsew", padx=5)
 
-    prefix = extract_utc_prefix(fpath)
-    lbl1 = tk.Label(cont, text=prefix, bg=BG_COLOR)
+    # Use subfolder name + index => e.g. <sf>_<c:03d}
+    name_with_index = f"{sf}_{c:03d}"
+    lbl1 = tk.Label(cont, text=name_with_index, bg=BG_COLOR)
     lbl1.pack(side="top", pady=1)
 
     lbl2 = tk.Label(cont, text=f"({br})", bg=BG_COLOR)
@@ -565,7 +575,6 @@ def build_crossfade_sequence(imgA,imgB,steps):
   hB,wB,_=imgB.shape
   if hA!=hB or wA!=wB:
     imgB=cv2.resize(imgB,(wA,hA))
-  # first => A => _000
   frames.append(imgA.copy())
   for i in range(1, steps+1):
     alpha=i/(steps+1)
@@ -574,50 +583,41 @@ def build_crossfade_sequence(imgA,imgB,steps):
   frames.append(imgB.copy())
   return frames
 
-def export_mpeg_video(frames,name):
+def export_mpeg_video(frames,name,fps=25):
   if not frames:
     return
   h,w,_=frames[0].shape
   fourcc=cv2.VideoWriter_fourcc(*'mp4v')
-  out=cv2.VideoWriter(name,fourcc,25.0,(w,h),True)
+  out=cv2.VideoWriter(name,fourcc,float(fps),(w,h),True)
   if not out.isOpened():
     return
   for f in frames:
     out.write(f)
   out.release()
 
-def build_global_subfolder_crossfade():
-  # produce frames across all subfolders + crossfades
+def build_global_subfolder_crossfade(steps):
   all_frames=[]
-  # we have two booleans => export_images_var => export_video_var
-  # but first let's just build the frames
   n_sub=len(subfolder_names)
   if n_sub<1:
     return []
-  # get final image of subfolder 0
-  for i in range(n_sub):
-    # build fade i
-    load_subfolder_images(i, auto_calc=False)
+  prevA=None
+  for i,sf in enumerate(subfolder_names):
+    load_subfolder_images(i,auto_calc=False)
     if brightness_slider.get()>0:
       filter_button()
     else:
       do_build_fading_core()
     if final_image is None:
       continue
-    imgA=final_image.copy()
-    # add entire subfolder fade as frames?
-    if i==0:
-      # store subfolder 0 fade as start
-      all_frames.append(imgA)
+    curF=final_image.copy()
+    if prevA is None:
+      all_frames.append(curF)
     else:
-      # crossfade from last frame in all_frames => new fade
-      # last in all_frames => old fade
-      prevA=all_frames[-1]  # might or might not be subfolder fade
-      steps=intermediate_count.get()
-      seq=build_crossfade_sequence(prevA,imgA,steps)
-      # seq[0] => old => we already have it
-      for idx in range(1,len(seq)):
-        all_frames.append(seq[idx])
+      seq=build_crossfade_sequence(prevA,curF,steps)
+      # skip seq[0] to avoid duplication
+      for k in range(1,len(seq)):
+        all_frames.append(seq[k])
+    prevA=curF
   return all_frames
 
 def do_build_global_crossfade_view():
@@ -628,7 +628,11 @@ def do_build_global_crossfade_view():
   if current_mode!=MODE_SUBFOLDERS or len(subfolder_names)<2:
     status_label.config(text="Crossfade needs multiple subfolders.")
     return
-  frames=build_global_subfolder_crossfade()
+  # ask user for # of crossfades
+  steps = simpledialog.askinteger("Crossfade Steps","Number of crossfade steps?",initialvalue=10,minvalue=1)
+  if not steps:
+    return
+  frames=build_global_subfolder_crossfade(steps)
   if not frames:
     status_label.config(text="No frames built.")
     return
@@ -641,41 +645,57 @@ def on_build_crossfade():
   do_build_global_crossfade_view()
 
 def export_fading():
-  outf=get_next_output_subfolder()
-  # check booleans => export_images_var => export_video_var
+  # ask user for crossfade steps + fps if video
+  out_folder = get_next_output_subfolder()
   do_build_fading_core()
-  # if subfolder + multiple => we do a single crossfade or single fades
-  frames=[]
   if current_mode==MODE_SUBFOLDERS and len(subfolder_names)>1:
-    # build crossfade across all subfolders
-    frames=build_global_subfolder_crossfade()
-    if not frames:
-      status_label.config(text=f"Export: no frames built.")
-      return
-    # if user wants export images
-    if export_images_var.get():
-      # save frames as _000.png, _001.png, ...
-      for i,frm in enumerate(frames):
-        cv2.imwrite(os.path.join(outf,f"{i:03d}.png"),frm)
-    # if user wants export video
+    # ask user for crossfade steps
+    steps = simpledialog.askinteger("Crossfade Steps","Number of crossfades?",initialvalue=10,minvalue=1)
+    if steps is None:
+      steps=10
+    # ask user for fps if export_video
+    fps=25
     if export_video_var.get():
-      videoname=os.path.join(outf,"all_subfolders_crossfade.mp4")
-      export_mpeg_video(frames,videoname)
-    status_label.config(text=f"Export done => {outf}")
+      fps_val=simpledialog.askinteger("FPS","Framerate for video?",initialvalue=25,minvalue=1)
+      if fps_val:
+        fps=fps_val
+    frames=build_global_subfolder_crossfade(steps)
+    if not frames:
+      status_label.config(text=f"No frames built for subfolder crossfade.")
+      return
+    # if export_images => store <subfolderName>_<frameidx:03d>.png
+    # but we have multiple subfolders => frame count doesn't match subfolder directly
+    # let's just store them with global idx => but with subfolder name if we want
+    # user said: "the naming <dir>_NNN.png" => we can't easily match each frame to subfolder
+    # We'll do a global idx but prefix with "subF"
+    if export_images_var.get():
+      for i,fm in enumerate(frames):
+        cv2.imwrite(os.path.join(out_folder,f"subF_{i:03d}.png"),fm)
+    # if export_video => one big video
+    if export_video_var.get():
+      videoname=os.path.join(out_folder,"global_crossfade.mp4")
+      export_mpeg_video(frames,videoname,fps)
+    status_label.config(text=f"Export done => {out_folder}")
   else:
-    # single fade
+    # single or no crossfade
     if final_image is None:
       status_label.config(text="No fade to export.")
       return
-    single_name=os.path.join(outf,"single_horizontalfading.png")
+    # store images
     if export_images_var.get():
-      cv2.imwrite(single_name,final_image)
+      # name => if single_dir => use that folder name
+      name=os.path.join(out_folder,"single_horizontalfading.png")
+      cv2.imwrite(name,final_image)
     if export_video_var.get():
-      # single frame => create small 1s video
-      frames=[final_image]*25
-      videoname=os.path.join(outf,"single_horizontalfading.mp4")
-      export_mpeg_video(frames,videoname)
-    status_label.config(text=f"Export done => {outf}")
+      # ask fps
+      fps_val=simpledialog.askinteger("FPS","Framerate for video?",initialvalue=25,minvalue=1)
+      fps=25
+      if fps_val:
+        fps=fps_val
+      frames=[final_image]*fps
+      vname=os.path.join(out_folder,"single_horizontalfading.mp4")
+      export_mpeg_video(frames,vname,fps)
+    status_label.config(text=f"Export done => {out_folder}")
 
 root=tk.Tk()
 root.title("Horizontal Fading")
@@ -717,9 +737,6 @@ height_entry.pack(side="left",padx=5)
 calc_btn=tk.Button(top_frame,text="Calculate",command=build_fading,bg=BG_COLOR)
 calc_btn.pack(side="left",padx=5)
 
-cf_btn=tk.Button(top_frame,text="Build Crossfade",command=on_build_crossfade,bg=BG_COLOR)
-cf_btn.pack(side="left",padx=5)
-
 export_btn=tk.Button(top_frame,text="Export",command=export_fading,bg=BG_COLOR)
 export_btn.pack(side="left",padx=5)
 
@@ -739,7 +756,6 @@ influence_slider=tk.Scale(top_frame,from_=-10,to=10,resolution=1,orient='horizon
 influence_slider.set(0)
 influence_slider.pack(side="left",padx=5)
 
-# 2 checkboxes => export images, export video
 export_images_var=tk.BooleanVar(value=True)
 export_video_var=tk.BooleanVar(value=False)
 
@@ -748,12 +764,6 @@ img_chk.pack(side="left",padx=5)
 
 vid_chk=tk.Checkbutton(top_frame,text="Export Video",variable=export_video_var,bg=BG_COLOR)
 vid_chk.pack(side="left",padx=5)
-
-int_label=tk.Label(top_frame,text="Steps:",bg=BG_COLOR)
-int_label.pack(side="left",padx=2)
-intermediate_count=tk.IntVar(value=3)
-steps_entry=tk.Entry(top_frame,textvariable=intermediate_count,width=4)
-steps_entry.pack(side="left",padx=2)
 
 cf_prev_btn=tk.Button(top_frame,text="CF <<",bg=BG_COLOR,command=on_cf_prev,state="disabled")
 cf_prev_btn.pack(side="left",padx=5)
