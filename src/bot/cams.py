@@ -5,18 +5,18 @@ import json
 from datetime import datetime
 
 # Import your download routines
-from routines.webcamimage import download_webcam
+from routines.staticjpg import download_staticjpg
 from routines.dynamicjpg import download_dynamicjpg
 from routines.youtube import download_youtube
 from routines.faratel import download_faratel
 from routines.redspira import download_redspira
 from routines.snerpa import download_snerpa
 from routines.kt import download_kt
-from routines.livechina import download_livechina
-from routines.rt import download_rt
 from routines.rtsp import download_rtsp
 from routines.ufanet import download_ufanet
-#from routines.windy import download_windy
+from routines.usap import download_usap
+from routines.windy import download_windy
+
 
 output_folder = "img"
 os.makedirs(output_folder, exist_ok=True)
@@ -28,17 +28,16 @@ def format_utc(i):
 
 camera_routines = {
   "faratel":      ("faratelcams",  download_faratel),
-  "webcamimage":  ("webcamimage",  download_webcam),
+  "staticjpg":    ("staticjpg",    download_staticjpg),
   "dynamicjpg":   ("dynamicjpg",   download_dynamicjpg),
   "youtube":      ("youtube",      download_youtube),
   "redspira":     ("redspira",     download_redspira),
   "snerpa":       ("snerpa",       download_snerpa),
   "kt":           ("kt",           download_kt),
-  "livechina":    ("livechina",    download_livechina),
-  "rt":           ("rt",           download_rt),
   "rtsp":         ("rtsp",         download_rtsp),
   "ufanet":       ("ufanet",       download_ufanet),
-  #"windy":        ("windy",        download_windy),
+  'usap':         ('usap',         download_usap),
+  "windy":        ("windy",        download_windy),
 }
 
 # Global dict to store the final mapping from "routine_name" -> (list_of_items, download_func)
@@ -76,19 +75,35 @@ def dispatch_download(item, logger):
     # Check if the item is part of the current list
     if any(x["id"] == item_id for x in cam_list):
       try:
-        # If routine_name is dynamicjpg or webcamimage, we may pass extra parameters
-        if routine_name == "dynamicjpg" or routine_name == "windy":
+        # If routine_name is dynamicjpg or staticjpg, we may pass extra parameters
+        if routine_name == "dynamicjpg":
           src_pattern = item.get("src", None)
-          element_class = item.get("class", None)
+          element_class = item.get("imgclass", None)
+          element_id = item.get("imgid", None)
           res = download_func(
             url=item["url"],
             image_id=item["id"],
             src_pattern=src_pattern,
-            element_class=element_class
+            element_class=element_class,
+            element_id=element_id
           )
-        elif routine_name == "webcamimage":
-          # Direct URL-based download for webcamimage
+        elif routine_name == "staticjpg":
+          # Direct URL-based download for staticjpg
           res = download_func(url=item["url"], image_id=item["id"])
+        elif routine_name == "usap":
+          element_id = item.get("imgid", None)
+          tab_id = item.get("tabid", None)
+          res = download_func(
+            url=item["url"],
+            image_id=item["id"],
+            element_id=element_id,
+            tab_id=tab_id
+          )
+        elif routine_name == "windy":
+          res = download_func(
+            url=item["url"],
+            image_id=item["id"],
+          )
         else:
           # Default behavior for other routines
           # e.g. download_faratel(url, image_id)
