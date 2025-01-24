@@ -8,7 +8,6 @@ import threading
 from tkinter import simpledialog
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 from datetime import datetime, timedelta
-
 from cams import load_cameras_from_json, register_downloads, dispatch_download, format_utc
 
 output_folder = "img"
@@ -232,73 +231,97 @@ class WebcamApp:
     self.worker_thread.start()
 
   def run_bot(self):
-    """Performs the download for each selected item in a background thread."""
-    self.run_count += 1
-    line_no = f"{self.run_count:04d}"
-    current_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if self.auto_run_active:
-      cycle_info = f"{int(self.cycle_seconds)}s-cycle + maskCheck"
-    else:
-      cycle_info = "manual-run"
+      """Performs the download for each selected item in a background thread."""
+      self.run_count += 1
+      line_no = f"{self.run_count:04d}"
+      current_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+      if self.auto_run_active:
+        cycle_info = f"{int(self.cycle_seconds)}s-cycle + maskCheck"
+      else:
+        cycle_info = "manual-run"
 
-    self.safe_log(f"{line_no} {current_ts} {cycle_info}")
+      self.safe_log(f"{line_no} {current_ts} {cycle_info}")
 
-    for u in self.all_utc_ids:
-      if self.selected_items[u].get():
-        it = self.item_dict[u]
-        if not it.get("url"):
-          self.safe_log(f"No URL for {u}, skipping")
-          continue
+      for u in self.all_utc_ids:
+        if self.selected_items[u].get():
+          it = self.item_dict[u]
+          if not it.get("url"):
+            self.safe_log(f"No URL for {u}, skipping")
+            continue
 
-        # Cyan border to show active download
-        self.safe_set_frame_color(u, "#00FFFF")
+          # Zu Beginn für aktiven Download: Rahmen Cyan
+          self.safe_set_frame_color(u, "#00FFFF")
 
-        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        potential_jpg_name = f"{it['id']}_{timestamp_str}.jpg"
-        potential_jpg_path = os.path.join(self.run_folder, potential_jpg_name)
+          timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+          potential_jpg_name = f"{it['id']}_{timestamp_str}.jpg"
+          potential_jpg_path = os.path.join(self.run_folder, potential_jpg_name)
 
-        ok, newfile, local_file = self.dispatch_with_path(it)
-        if not ok:
-          self.safe_set_frame_color(u, "#FF0000")
-          error_msg = f"Download failed for {it['id']} => {potential_jpg_name}"
-          self.safe_log(error_msg)
-          error_txt_path = os.path.splitext(potential_jpg_path)[0] + ".txt"
-          try:
-            with open(error_txt_path, "w", encoding="utf-8") as f:
-              f.write(error_msg + "\n")
-          except:
-            pass
-        else:
-          # If download was successful
-          if newfile:
-            self.safe_set_frame_color(u, "#00FF00")
-          else:
-            if self.slot_mode[u] == "latest":
-              self.safe_set_frame_color(u, "#A9A9A9")
+          attempts = 3
+          success = False
+          local_file = None
+          newfile = False
+
+          for attempt in range(attempts):
+            ok, newfile, local_file = self.dispatch_with_path(it)
+            if ok:
+              success = True
+              break
             else:
-              self.safe_set_frame_color(u, "#D3D3D3")
+              # Zusätzliche Versuche mit orangem Rahmen
+              if attempt < attempts - 1:
+                self.safe_log(f"Download attempt {attempt+1} failed for {it['id']}, retrying...")
+                self.safe_set_frame_color(u, "#FFA500")
+              else:
+                # Nach allen Versuchen gescheitert: Rahmen rot
+                self.safe_set_frame_color(u, "#FF0000")
+                error_msg = (
+                  f"Download failed for {it['id']} => {potential_jpg_name} "
+                  f"after {attempts} attempts"
+                )
+                self.safe_log(error_msg)
+                error_txt_path = os.path.splitext(potential_jpg_path)[0] + ".txt"
+                try:
+                  with open(error_txt_path, "w", encoding="utf-8") as f:
+                    f.write(error_msg + "\n")
+                except:
+                  pass
 
-          if local_file:
-            base_name = os.path.basename(local_file)
-            new_path = os.path.join(self.run_folder, base_name)
-            if local_file != new_path:
-              try:
-                shutil.move(local_file, new_path)
-              except Exception as e:
-                self.safe_log(f"Cannot move file {local_file} to {new_path}: {e}")
-                new_path = local_file
+          if not success:
+            # Zum nächsten Eintrag übergehen, wenn komplett fehlgeschlagen
+            self.safe_update_cell(u)
+            continue
+          else:
+            # Download war erfolgreich
+            if newfile:
+              self.safe_set_frame_color(u, "#00FF00")
+            else:
+              if self.slot_mode[u] == "latest":
+                self.safe_set_frame_color(u, "#A9A9A9")
+              else:
+                self.safe_set_frame_color(u, "#D3D3D3")
 
-            # Auto-run + Mask => also create a merged image in the timestamped folder
-            if self.auto_run_active and self.mask_state and os.path.exists(new_path):
-              try:
-                self.save_masked_variant(it["id"], new_path)
-              except Exception as me:
-                self.safe_log(f"Error creating masked image {new_path}: {me}")
+            if local_file:
+              base_name = os.path.basename(local_file)
+              new_path = os.path.join(self.run_folder, base_name)
+              if local_file != new_path:
+                try:
+                  shutil.move(local_file, new_path)
+                except Exception as e:
+                  self.safe_log(f"Cannot move file {local_file} to {new_path}: {e}")
+                  new_path = local_file
 
-            # Also put/copy a version in the "latest" folder
-            self.write_latest_variant(it["id"], new_path)
+              # Auto-run + Mask => merge zusätzlich erzeugen
+              if self.auto_run_active and self.mask_state and os.path.exists(new_path):
+                try:
+                  self.save_masked_variant(it["id"], new_path)
+                except Exception as me:
+                  self.safe_log(f"Error creating masked image {new_path}: {me}")
 
-        self.safe_update_cell(u)
+              # Auch eine Kopie ins "latest"-Verzeichnis
+              self.write_latest_variant(it["id"], new_path)
+
+          self.safe_update_cell(u)
+
 
   def save_masked_variant(self, item_id, file_path):
     """Creates a merged mask image from file_path and stores it as _merge.png."""
