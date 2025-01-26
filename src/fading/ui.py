@@ -1,17 +1,13 @@
-# ui.py
-
 import os
 import cv2
 import tkinter as tk
-from tkinter import filedialog, ttk, simpledialog, messagebox
+from tkinter import filedialog, ttk, messagebox
 import numpy as np
 import time
 from datetime import datetime
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 from dataclasses import dataclass
 from typing import List
-import threading
-
 from fading import FadingLogic
 
 BG_COLOR = "#dcdcdc"
@@ -26,12 +22,13 @@ MODE_SUBFOLDERS = 3
 @dataclass
 class ImageData:
   """
-  Holds information about each image:
-  - file_path: The absolute file path
-  - check_var: A Tkinter BooleanVar for including/excluding
-  - brightness_value: mean brightness for filtering
-  - offset: numeric offset (used in subfolder logic)
-  - is_proxy: True if this is a dummy/fallback
+  Holds information about a single image:
+  
+  file_path: the absolute path
+  check_var: a BooleanVar (whether the image is included in the fade)
+  brightness_value: used for filtering
+  offset: numeric offset (for subfolder logic)
+  is_proxy: True if this image is a fallback/dummy
   """
   file_path: str
   check_var: tk.BooleanVar
@@ -42,12 +39,13 @@ class ImageData:
 @dataclass
 class SubfolderFadeData:
   """
-  Contains final fade info for a subfolder:
-  - final_image: The BGR fade result
-  - boundary_positions: The x-coordinates of boundaries
-  - filenames_at_boundaries: pairs (filename, is_proxy)
-  - average_colors: row-wise color arrays for each segment
-  - transitions: list of numeric weights (before final width calc)
+  Contains the final fade result for a subfolder:
+  
+  final_image: the BGR (OpenCV) image of the fade
+  boundary_positions: list of x-coordinates for segment boundaries
+  filenames_at_boundaries: list of (filename, is_proxy)
+  average_colors: row-wise color arrays for each segment
+  transitions: raw numeric weights (before final width calculation)
   """
   final_image: np.ndarray
   boundary_positions: List[int]
@@ -56,26 +54,18 @@ class SubfolderFadeData:
   transitions: List[float]
 
 class FadingUI:
-  """
-  Main GUI class that handles:
-  - File/Subfolder logic
-  - Helligkeits-Filter, Influence, Deviation
-  - Dynamic Slider for segment-based fade
-  - Calculation & Export with a single Toplevel for param input + progress
-  """
-
   def __init__(self, root: tk.Tk):
     """
-    Initialize the main Tk window and data structures.
+    Initializes the main window and basic variables.
     """
     self.root = root
-    self.root.title("Horizontal Fading - Single Toplevel Export with Progress")
+    self.root.title("Horizontal Fading")
     self.root.configure(bg=BG_COLOR)
     self.root.geometry("1400x750")
 
     self.current_mode = MODE_NONE
-
     self.image_data: List[ImageData] = []
+
     self.subfolder_names = []
     self.subfolder_data = {}
     self.subfolder_combo_idx = 0
@@ -84,32 +74,21 @@ class FadingUI:
     self.boundary_positions = []
     self.filenames_at_boundaries = []
 
-    # For storing fade info per subfolder
+    # Stores final fade info per subfolder
     self.subfolder_fade_info = {}
 
-    # Crossfade frames for potential stepwise viewing
+    # For crossfade stepwise (not actively used here)
     self.crossfade_frames = []
     self.crossfade_index = 0
     self.crossfade_active = False
-
-    # Threaded export state
-    self.export_thread = None
-    self.export_done = False
-    self.export_stop_flag = False
-    self.export_progress = 0
-    self.export_total = 0
-
-    # We'll keep a reference to the export Toplevel
-    self.export_window = None
-    self.progress_bar = None
 
     self._build_ui()
 
   def _build_ui(self):
     """
-    Builds the GUI in two lines (frames).
+    Builds two rows of controls, plus status label, checkbox frame, and canvas.
     """
-    # First row
+    # Row 1
     self.top_frame_1 = tk.Frame(self.root, bg=BG_COLOR)
     self.top_frame_1.pack(side="top", fill="x", pady=5)
 
@@ -138,7 +117,7 @@ class FadingUI:
     self.export_btn = tk.Button(self.top_frame_1, text="Export", command=self.on_export, bg=BG_COLOR)
     self.export_btn.pack(side="left", padx=5)
 
-    # Second row
+    # Row 2
     self.top_frame_2 = tk.Frame(self.root, bg=BG_COLOR)
     self.top_frame_2.pack(side="top", fill="x", pady=5)
 
@@ -149,7 +128,7 @@ class FadingUI:
 
     tk.Label(self.top_frame_2, text="Height:", bg=BG_COLOR).pack(side="left", padx=5)
     self.height_entry = tk.Entry(self.top_frame_2, width=6)
-    self.height_entry.insert(0, "1080")
+    self.height_entry.insert(0, "720")
     self.height_entry.pack(side="left", padx=5)
 
     tk.Label(self.top_frame_2, text="Brightness Filter:", bg=BG_COLOR).pack(side="left", padx=5)
@@ -163,13 +142,13 @@ class FadingUI:
     self.reset_btn = tk.Button(self.top_frame_2, text="Reset", command=self.on_reset, bg=BG_COLOR)
     self.reset_btn.pack(side="left", padx=5)
 
-    tk.Label(self.top_frame_2, text="Influence (-10..+10):", bg=BG_COLOR).pack(side="left", padx=5)
-    self.influence_slider = tk.Scale(self.top_frame_2, from_=-10, to=10, resolution=1, orient='horizontal', bg=BG_COLOR)
+    tk.Label(self.top_frame_2, text="Influence:", bg=BG_COLOR).pack(side="left", padx=5)
+    self.influence_slider = tk.Scale(self.top_frame_2, from_=-4, to=10, resolution=1, orient='horizontal', bg=BG_COLOR)
     self.influence_slider.set(0)
     self.influence_slider.pack(side="left", padx=5)
 
     tk.Label(self.top_frame_2, text="Max Deviation (%):", bg=BG_COLOR).pack(side="left", padx=5)
-    self.damping_slider = tk.Scale(self.top_frame_2, from_=0, to=50, resolution=1, orient='horizontal', bg=BG_COLOR)
+    self.damping_slider = tk.Scale(self.top_frame_2, from_=0, to=100, resolution=1, orient='horizontal', bg=BG_COLOR)
     self.damping_slider.set(20)
     self.damping_slider.pack(side="left", padx=5)
 
@@ -178,11 +157,10 @@ class FadingUI:
     self.dynamic_slider.set(0)
     self.dynamic_slider.pack(side="left", padx=5)
 
-    self.export_images_var = tk.BooleanVar(value=True)
-    self.export_video_var = tk.BooleanVar(value=False)
+    self.export_images_var = tk.BooleanVar(value=False)
+    self.export_video_var = tk.BooleanVar(value=True)
     self.img_chk = tk.Checkbutton(self.top_frame_2, text="Export Images", variable=self.export_images_var, bg=BG_COLOR)
     self.img_chk.pack(side="left", padx=5)
-
     self.vid_chk = tk.Checkbutton(self.top_frame_2, text="Export Video", variable=self.export_video_var, bg=BG_COLOR)
     self.vid_chk.pack(side="left", padx=5)
 
@@ -196,11 +174,15 @@ class FadingUI:
     self.display_canvas.pack(side="top", fill="both", expand=True)
     self.display_canvas.bind("<Configure>", self.on_canvas_resized)
 
-  # ----------------
-  # File / Directory / Subfolder logic
-  # ----------------
+  # -------------------------
+  # File / Directory
+  # -------------------------
 
   def on_select_images(self):
+    """
+    Opens a file dialog to select images, sets mode to FILES,
+    then builds image_data accordingly.
+    """
     files = filedialog.askopenfilenames(
       title="Select Images",
       filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif")]
@@ -213,6 +195,10 @@ class FadingUI:
     self.update_navigation()
 
   def on_select_directory(self):
+    """
+    Selects a single directory and collects all *_fading.png images,
+    sets mode to SINGLE_DIR.
+    """
     folder = filedialog.askdirectory(title="Select Directory")
     if not folder:
       return
@@ -226,13 +212,16 @@ class FadingUI:
     self.update_navigation()
 
   def on_select_subfolders(self):
+    """
+    Selects a directory that contains multiple subfolders,
+    each with *_fading.png images. Sets mode to SUBFOLDERS.
+    """
     folder = filedialog.askdirectory(title="Select Directory (with Subfolders)")
     if not folder:
       return
     self.set_mode(MODE_SUBFOLDERS)
     self.subfolder_names.clear()
     self.subfolder_data.clear()
-    self.subfolder_fade_info.clear()
 
     subfolders = []
     for item in os.listdir(folder):
@@ -264,7 +253,7 @@ class FadingUI:
       return
 
     all_offsets_sorted = sorted(list(all_offsets))
-    # Fill missing offsets with fallback
+    # fill missing offsets with fallback
     for i, sf in enumerate(self.subfolder_names):
       om = self.subfolder_data[sf]
       new_map = {}
@@ -276,10 +265,47 @@ class FadingUI:
           new_map[off] = (path, is_proxy)
       self.subfolder_data[sf] = new_map
 
+    # Now we can fill the combobox
     self.subfolder_combo["values"] = self.subfolder_names
     self.subfolder_combo.current(0)
     self._load_subfolder_images(0, auto_calc=False)
     self.update_navigation()
+
+  def set_mode(self, mode):
+    """
+    Sets the current mode (FILES, SINGLE_DIR, SUBFOLDERS).
+    """
+    self.current_mode = mode
+    self.subfolder_combo_idx = 0
+
+  def update_navigation(self):
+    """
+    Updates UI elements (prev/next buttons, combo) based on current_mode.
+    """
+    if self.current_mode == MODE_SUBFOLDERS and len(self.subfolder_names) > 1:
+      self.subfolder_combo.config(state="readonly")
+      if self.subfolder_combo_idx > 0:
+        self.prev_btn.config(state="normal")
+      else:
+        self.prev_btn.config(state="disabled")
+      if self.subfolder_combo_idx < len(self.subfolder_names) - 1:
+        self.next_btn.config(state="normal")
+      else:
+        self.next_btn.config(state="disabled")
+    else:
+      self.subfolder_combo.config(state="disabled")
+      self.prev_btn.config(state="disabled")
+      self.next_btn.config(state="disabled")
+
+    c = len(self.image_data)
+    if self.current_mode == MODE_SUBFOLDERS and self.subfolder_names:
+      if self.subfolder_combo_idx < len(self.subfolder_names):
+        sf = self.subfolder_names[self.subfolder_combo_idx]
+        self.status_label.config(text=f"Subfolder '{sf}': {c} images.")
+      else:
+        self.status_label.config(text=f"{c} images in subfolder idx {self.subfolder_combo_idx}")
+    else:
+      self.status_label.config(text=f"{c} images loaded.")
 
   def on_prev_subfolder(self):
     if self.crossfade_active:
@@ -304,342 +330,20 @@ class FadingUI:
     self._load_subfolder_images(idx, auto_calc=True)
 
   def on_subfolder_changed(self, evt=None):
+    """
+    Called when the user selects a different subfolder in the combo.
+    """
     selection = self.subfolder_combo.get()
     if selection in self.subfolder_names:
       idx = self.subfolder_names.index(selection)
       self._load_subfolder_images(idx, auto_calc=True)
 
-  def set_mode(self, mode):
-    self.current_mode = mode
-    self.subfolder_combo_idx = 0
-    self.update_navigation()
-
-  def update_navigation(self):
-    if self.current_mode == MODE_SUBFOLDERS and len(self.subfolder_names) > 1:
-      self.subfolder_combo.config(state="readonly")
-      if self.subfolder_combo_idx > 0:
-        self.prev_btn.config(state="normal")
-      else:
-        self.prev_btn.config(state="disabled")
-      if self.subfolder_combo_idx < len(self.subfolder_names) - 1:
-        self.next_btn.config(state="normal")
-      else:
-        self.next_btn.config(state="disabled")
-    else:
-      self.subfolder_combo.config(state="disabled")
-      self.prev_btn.config(state="disabled")
-      self.next_btn.config(state="disabled")
-
-    if self.crossfade_active:
-      pass
-
-    c = len(self.image_data)
-    if self.current_mode == MODE_SUBFOLDERS and self.subfolder_names:
-      if self.subfolder_combo_idx < len(self.subfolder_names):
-        sf = self.subfolder_names[self.subfolder_combo_idx]
-        self.status_label.config(text=f"Subfolder '{sf}': {c} images.")
-      else:
-        self.status_label.config(text=f"{c} images in subfolder idx {self.subfolder_combo_idx}")
-    else:
-      self.status_label.config(text=f"{c} images loaded.")
-
-  # -------------
-  # Calculation
-  # -------------
-
-  def on_calculate(self):
-    start_t = time.time()
-    self.crossfade_active = False
-    self.crossfade_frames.clear()
-    if self.current_mode == MODE_SUBFOLDERS and self.subfolder_names:
-      if self.brightness_slider.get() > 0:
-        self.on_filter()
-        return
-      else:
-        self._build_fade_core()
-    else:
-      self._build_fade_core()
-    end_t = time.time()
-    elapsed = round(end_t - start_t, 2)
-    self.status_label.config(text=f"Calculation done in {elapsed}s. {self.status_label.cget('text')}")
-
-  def on_filter(self):
-    start_t = time.time()
-    self._reset_checkboxes()
-    threshold = self.brightness_slider.get()
-    for data_item in self.image_data:
-      if data_item.brightness_value < threshold:
-        data_item.check_var.set(False)
-    self._build_fade_core()
-    end_t = time.time()
-    elapsed = round(end_t - start_t, 2)
-    self.status_label.config(text=f"Filtered < {threshold} in {elapsed}s. {self.status_label.cget('text')}")
-
-  def on_reset(self):
-    self.brightness_slider.set(0)
-    self._reset_checkboxes()
-    self._build_fade_core()
-    self.status_label.config(text="Reset filter. Recalculated fade.")
-
-  def _reset_checkboxes(self):
-    for data_item in self.image_data:
-      data_item.check_var.set(True)
-
-  def _build_fade_core(self):
-    """
-    Builds the fade with Influence and Deviation. Stores final_image, boundary_positions, etc.
-    """
-    active_paths = []
-    brightness_list = []
-    proxy_list = []
-
-    for d in self.image_data:
-      if d.check_var.get():
-        active_paths.append(d.file_path)
-        brightness_list.append(d.brightness_value)
-        proxy_list.append(d.is_proxy)
-
-    if len(active_paths) < 2:
-      self.status_label.config(text="Not enough checked images.")
-      self.final_image = None
-      self.boundary_positions = []
-      self.filenames_at_boundaries = []
-      self._redraw_canvas()
-      return
-
-    # parse width/height
-    try:
-      width_total = int(self.width_entry.get())
-      height_total = int(self.height_entry.get())
-      if width_total < 10 or height_total < 10:
-        raise ValueError
-    except ValueError:
-      self.status_label.config(text="Width/Height error.")
-      return
-
-    final_result = np.zeros((height_total, width_total, 3), dtype=np.uint8)
-    bounds = []
-    filenames = []
-    average_colors = []
-    transitions = []
-    n = len(active_paths)
-
-    # Prepare average row-colors
-    for path in active_paths:
-      img = cv2.imread(path)
-      if img is None:
-        dummy = np.zeros((10, 10, 3), dtype=np.uint8)
-        ratio = height_total / 10
-        new_w = max(1, int(10 * ratio))
-        resized = cv2.resize(dummy, (new_w, height_total))
-        avg = FadingLogic.calculate_horizontal_average(resized)
-        average_colors.append(avg)
-      else:
-        ratio = height_total / img.shape[0]
-        new_w = max(1, int(img.shape[1] * ratio))
-        resized = cv2.resize(img, (new_w, height_total))
-        avg = FadingLogic.calculate_horizontal_average(resized)
-        average_colors.append(avg)
-
-    # Influence-based weighting
-    influence_val = float(self.influence_slider.get())
-    original_transitions = []
-    for i in range(n - 1):
-      ab = (brightness_list[i] + brightness_list[i+1]) / 2.0
-      orig_w = 1.0
-      if influence_val == 0:
-        wgt = 1.0
-      else:
-        safe_bright = max(1, ab)
-        wgt = safe_bright ** influence_val
-        if wgt < 1e-6:
-          wgt = 0
-      transitions.append(wgt)
-      original_transitions.append(orig_w)
-
-    total_w = sum(transitions)
-    if total_w <= 0:
-      self.status_label.config(text="All transitions zero => no fade.")
-      self.final_image = None
-      self.boundary_positions = []
-      self.filenames_at_boundaries = []
-      self._redraw_canvas()
-      return
-
-    damping_percent = self.damping_slider.get()
-    sum_orig = sum(original_transitions)
-
-    x_start = 0
-    for i in range(n - 1):
-      w_i = transitions[i]
-      fname = os.path.basename(active_paths[i])
-      is_proxy_flag = proxy_list[i]
-      if w_i <= 0:
-        bounds.append(x_start)
-        filenames.append((fname, is_proxy_flag))
-        continue
-
-      frac_influenced = w_i / total_w
-      frac_original = original_transitions[i] / sum_orig
-
-      influenced_width_px = int(round(width_total * frac_influenced))
-      original_width_px = int(round(width_total * frac_original))
-
-      diff = influenced_width_px - original_width_px
-      max_shift = int(round(original_width_px * (damping_percent / 100.0)))
-
-      if abs(diff) > max_shift:
-        if diff > 0:
-          influenced_width_px = original_width_px + max_shift
-        else:
-          influenced_width_px = original_width_px - max_shift
-
-      seg_w = influenced_width_px
-      x_end = x_start + seg_w
-      if i == (n - 2):
-        x_end = width_total
-      if x_end > width_total:
-        x_end = width_total
-      if x_end <= x_start:
-        bounds.append(x_start)
-        filenames.append((fname, is_proxy_flag))
-        continue
-
-      grad = FadingLogic.generate_fading_gradient(average_colors[i], average_colors[i+1], x_end - x_start)
-      final_result[:, x_start:x_end] = grad
-      bounds.append(x_start)
-      filenames.append((fname, is_proxy_flag))
-      x_start = x_end
-
-    last_name = os.path.basename(active_paths[-1])
-    last_proxy = proxy_list[-1]
-    bounds.append(width_total - 1)
-    filenames.append((last_name, last_proxy))
-
-    self.final_image = final_result
-    self.boundary_positions = bounds
-    self.filenames_at_boundaries = filenames
-
-    # If in subfolder mode, store result
-    if self.current_mode == MODE_SUBFOLDERS and self.subfolder_names:
-      if self.subfolder_combo_idx < len(self.subfolder_names):
-        sf_key = self.subfolder_names[self.subfolder_combo_idx]
-        fade_data = SubfolderFadeData(
-          final_image=final_result,
-          boundary_positions=bounds[:],
-          filenames_at_boundaries=filenames[:],
-          average_colors=average_colors[:],
-          transitions=transitions[:]
-        )
-        self.subfolder_fade_info[sf_key] = fade_data
-
-    self._redraw_canvas()
-
-  # ----------------
-  # CROSSFADE
-  # ----------------
-
-  def _build_global_subfolder_crossfade(self, steps: int) -> List[np.ndarray]:
-    frames = []
-    n_sub = len(self.subfolder_names)
-    if n_sub < 1:
-      return frames
-
-    prev_data = None
-    for i, sf in enumerate(self.subfolder_names):
-      self._load_subfolder_images(i, auto_calc=False)
-      if self.brightness_slider.get() > 0:
-        self.on_filter()
-      else:
-        self._build_fade_core()
-      if self.final_image is None:
-        continue
-
-      current_data = self.subfolder_fade_info.get(sf, None)
-      if current_data is None:
-        frames.append(self.final_image.copy())
-        prev_data = None
-        continue
-
-      if prev_data is None:
-        frames.append(current_data.final_image.copy())
-      else:
-        new_frames = self._build_mix_crossfade(prev_data, current_data, steps)
-        for idx_f in range(1, len(new_frames)):
-          frames.append(new_frames[idx_f])
-
-      prev_data = current_data
-    return frames
-
-  def _build_mix_crossfade(self, fadeA: SubfolderFadeData, fadeB: SubfolderFadeData, steps: int) -> List[np.ndarray]:
-    dyn_val = self.dynamic_slider.get()
-    if dyn_val < 1:
-      return FadingLogic.build_crossfade_sequence(fadeA.final_image, fadeB.final_image, steps)
-    if dyn_val > 99:
-      return self._build_segment_interpolated_crossfade(fadeA, fadeB, steps)
-
-    seg_frames = self._build_segment_interpolated_crossfade(fadeA, fadeB, steps)
-    pix_frames = FadingLogic.build_crossfade_sequence(fadeA.final_image, fadeB.final_image, steps)
-
-    frames = []
-    frames.append(pix_frames[0].copy())
-    alpha_dyn = dyn_val / 100.0
-    for i in range(1, len(pix_frames)):
-      blended = self._blend_two_images(pix_frames[i], seg_frames[i], alpha_dyn)
-      frames.append(blended)
-    frames.append(pix_frames[-1].copy())
-    return frames
-
-  def _build_segment_interpolated_crossfade(self, fadeA: SubfolderFadeData, fadeB: SubfolderFadeData, steps: int) -> List[np.ndarray]:
-    frames = []
-    hA, wA, _ = fadeA.final_image.shape
-    hB, wB, _ = fadeB.final_image.shape
-    if hA != hB or wA != wB:
-      return FadingLogic.build_crossfade_sequence(fadeA.final_image, fadeB.final_image, steps)
-
-    bposA = np.array(fadeA.boundary_positions, dtype=np.float32)
-    bposB = np.array(fadeB.boundary_positions, dtype=np.float32)
-    avgA = fadeA.average_colors
-    avgB = fadeB.average_colors
-    if len(avgA) != len(avgB) or len(avgA) < 2:
-      return FadingLogic.build_crossfade_sequence(fadeA.final_image, fadeB.final_image, steps)
-
-    frames.append(fadeA.final_image.copy())
-    for s in range(1, steps + 1):
-      alpha = s / (steps + 1)
-      curPos = (1 - alpha)*bposA + alpha*bposB
-      blended_colors = []
-      for i_col in range(len(avgA)):
-        ca = avgA[i_col]
-        cb = avgB[i_col]
-        c_blend = (1 - alpha)*ca + alpha*cb
-        blended_colors.append(c_blend.astype(np.uint8))
-
-      res = np.zeros((hA, wA, 3), dtype=np.uint8)
-      x_start = 0
-      for i_seg in range(len(avgA) - 1):
-        x_end = int(round(curPos[i_seg+1]))
-        if x_end < x_start:
-          continue
-        if x_end > wA:
-          x_end = wA
-        grad = FadingLogic.generate_fading_gradient(blended_colors[i_seg], blended_colors[i_seg+1], x_end - x_start)
-        res[:, x_start:x_end] = grad
-        x_start = x_end
-      frames.append(res)
-    frames.append(fadeB.final_image.copy())
-    return frames
-
-  def _blend_two_images(self, imgA: np.ndarray, imgB: np.ndarray, alpha: float) -> np.ndarray:
-    hA, wA, _ = imgA.shape
-    hB, wB, _ = imgB.shape
-    if (hA != hB) or (wA != wB):
-      imgB = cv2.resize(imgB, (wA, hA))
-    return cv2.addWeighted(imgA, 1.0 - alpha, imgB, alpha, 0)
-
   def _load_subfolder_images(self, idx, auto_calc=True):
-    for widget in self.checkbox_frame.winfo_children():
-      widget.destroy()
+    """
+    Loads image data for a given subfolder index, optionally auto-calculates.
+    """
+    for w in self.checkbox_frame.winfo_children():
+      w.destroy()
     self.image_data.clear()
 
     self.subfolder_combo_idx = idx
@@ -657,7 +361,7 @@ class FadingUI:
     self.checkbox_frame.columnconfigure(tuple(range(total_files)), weight=1)
     for col_idx, (fp, px, off_val) in enumerate(file_info):
       var = tk.BooleanVar(value=True)
-      br_val = self._calc_brightness(fp)
+      br = self._calc_brightness(fp)
       filename = os.path.basename(fp)
       prefix = filename.split("_", 1)[0]
 
@@ -670,29 +374,31 @@ class FadingUI:
       lb_name = tk.Label(frame_card, text=prefix, bg=BG_COLOR)
       lb_name.pack(side="top")
 
-      lb_bright = tk.Label(frame_card, text=str(br_val), bg=BG_COLOR)
+      lb_bright = tk.Label(frame_card, text=str(br), bg=BG_COLOR)
       lb_bright.pack(side="top")
 
       self.image_data.append(
-        ImageData(
-          file_path=fp,
-          check_var=var,
-          brightness_value=br_val,
-          offset=off_val,
-          is_proxy=px
-        )
+        ImageData(file_path=fp, check_var=var, brightness_value=br, offset=off_val, is_proxy=px)
       )
 
     if auto_calc:
+      # If brightness slider > 0, apply filter, then build fade
       if self.brightness_slider.get() > 0:
         self.on_filter()
       else:
         self._build_fade_core()
     self.update_navigation()
 
+  # -------------
+  # Building image data
+  # -------------
+
   def _build_image_data(self, filepaths: List[str]):
-    for widget in self.checkbox_frame.winfo_children():
-      widget.destroy()
+    """
+    Creates checkboxes for each file and stores the data in self.image_data.
+    """
+    for w in self.checkbox_frame.winfo_children():
+      w.destroy()
     self.image_data.clear()
 
     total_files = len(filepaths)
@@ -721,28 +427,245 @@ class FadingUI:
       lb_bright.pack(side="top")
 
       self.image_data.append(
-        ImageData(
-          file_path=fp,
-          check_var=var,
-          brightness_value=br_val,
-          offset=offset_val,
-          is_proxy=False
-        )
+        ImageData(file_path=fp, check_var=var, brightness_value=br_val, offset=offset_val, is_proxy=False)
       )
 
   def _calc_brightness(self, filepath: str) -> int:
+    """
+    Calculates mean brightness, or 0 if file not found.
+    """
     img = cv2.imread(filepath)
     if img is None:
       return 0
     return int(round(np.mean(img)))
 
-  # ----------------
-  # Export
-  # ----------------
+  # -------------
+  # Calculation
+  # -------------
+
+  def on_calculate(self):
+    """
+    Builds the fade synchronously, overwriting status_label each time.
+    """
+    start_t = time.time()
+    self.crossfade_active = False
+    self.crossfade_frames.clear()
+
+    if self.current_mode == MODE_SUBFOLDERS and self.subfolder_names:
+      if self.brightness_slider.get() > 0:
+        self.on_filter()
+        return
+      else:
+        self._build_fade_core()
+    else:
+      self._build_fade_core()
+
+    end_t = time.time()
+    elapsed = round(end_t - start_t, 2)
+    self.status_label.config(text=f"Calculation done in {elapsed}s.")
+
+  def on_filter(self):
+    """
+    Applies brightness filter, then rebuilds fade. Overwrites the status text with the filter time.
+    """
+    start_t = time.time()
+    self._reset_checkboxes()
+    threshold = self.brightness_slider.get()
+    for data_item in self.image_data:
+      if data_item.brightness_value < threshold:
+        data_item.check_var.set(False)
+    self._build_fade_core()
+    end_t = time.time()
+    elapsed = round(end_t - start_t, 2)
+    self.status_label.config(text=f"Filtered < {threshold} in {elapsed}s.")
+
+  def on_reset(self):
+    """
+    Resets the brightness slider to 0, re-checks all images, and rebuilds the fade.
+    """
+    self.brightness_slider.set(0)
+    self._reset_checkboxes()
+    self._build_fade_core()
+    self.status_label.config(text="Filter reset, fade recalculated.")
+
+  def _reset_checkboxes(self):
+    """
+    Ensures all images are included again.
+    """
+    for data_item in self.image_data:
+      data_item.check_var.set(True)
+
+  def _build_fade_core(self):
+    """
+    Builds the fade with Influence and Deviation, storing final_image and boundary data.
+    Uses no time measurement here, as on_calculate/on_filter measure around it.
+    """
+    active_paths = []
+    brightness_list = []
+    proxy_list = []
+    for d in self.image_data:
+      if d.check_var.get():
+        active_paths.append(d.file_path)
+        brightness_list.append(d.brightness_value)
+        proxy_list.append(d.is_proxy)
+
+    if len(active_paths) < 2:
+      self.status_label.config(text="Not enough checked images.")
+      self.final_image = None
+      self.boundary_positions = []
+      self.filenames_at_boundaries = []
+      self._redraw_canvas()
+      return
+
+    try:
+      width_total = int(self.width_entry.get())
+      height_total = int(self.height_entry.get())
+      if width_total < 10 or height_total < 10:
+        raise ValueError
+    except ValueError:
+      self.status_label.config(text="Width/Height error.")
+      return
+
+    final_result = np.zeros((height_total, width_total, 3), dtype=np.uint8)
+    bounds = []
+    filenames = []
+    average_colors = []
+    transitions = []
+    n = len(active_paths)
+
+    # Load row-wise averages
+    for path in active_paths:
+      img = cv2.imread(path)
+      if img is None:
+        dummy = np.zeros((10, 10, 3), dtype=np.uint8)
+        ratio = height_total / 10
+        new_w = max(1, int(10 * ratio))
+        resized = cv2.resize(dummy, (new_w, height_total))
+        avg = FadingLogic.calculate_horizontal_average(resized)
+        average_colors.append(avg)
+      else:
+        ratio = height_total / img.shape[0]
+        new_w = max(1, int(img.shape[1] * ratio))
+        resized = cv2.resize(img, (new_w, height_total))
+        avg = FadingLogic.calculate_horizontal_average(resized)
+        average_colors.append(avg)
+
+    # Compute transitions with Influence
+    influence_val = float(self.influence_slider.get())
+    original_transitions = []
+    for i in range(n - 1):
+      ab = (brightness_list[i] + brightness_list[i+1]) / 2.
+      orig_w = 1.0
+      if influence_val == 0:
+        wgt = 1.0
+      else:
+        safe_bright = max(1, ab)
+        wgt = safe_bright ** influence_val
+        if wgt < 1e-6:
+          wgt = 0
+      transitions.append(wgt)
+      original_transitions.append(orig_w)
+
+    total_w = sum(transitions)
+    if total_w <= 0:
+      self.status_label.config(text="All transitions zero => no fade.")
+      self.final_image = None
+      self.boundary_positions = []
+      self.filenames_at_boundaries = []
+      self._redraw_canvas()
+      return
+
+    damping_percent = float(self.damping_slider.get())
+    sum_orig = sum(original_transitions)
+
+    x_start = 0
+    for i in range(n - 1):
+      w_i = transitions[i]
+      fname = os.path.basename(active_paths[i])
+      is_proxy_flag = proxy_list[i]
+      if w_i <= 0:
+        bounds.append(x_start)
+        filenames.append((fname, is_proxy_flag))
+        continue
+
+      frac_influenced = w_i / total_w
+      frac_original = original_transitions[i] / sum_orig
+
+      infl_w_px = int(round(width_total * frac_influenced))
+      orig_w_px = int(round(width_total * frac_original))
+
+      diff = infl_w_px - orig_w_px
+      max_shift = int(round(orig_w_px * (damping_percent / 100.0)))
+      if abs(diff) > max_shift:
+        if diff > 0:
+          infl_w_px = orig_w_px + max_shift
+        else:
+          infl_w_px = orig_w_px - max_shift
+
+      seg_w = infl_w_px
+      x_end = x_start + seg_w
+      if i == (n - 2):
+        x_end = width_total
+      if x_end > width_total:
+        x_end = width_total
+      if x_end <= x_start:
+        bounds.append(x_start)
+        filenames.append((fname, is_proxy_flag))
+        continue
+
+      # NumPy broadcasting for segment fade
+      leftC = average_colors[i]   # shape (height, 3)
+      rightC = average_colors[i+1]
+      seg_width = x_end - x_start
+      if seg_width < 1:
+        bounds.append(x_start)
+        filenames.append((fname, is_proxy_flag))
+        continue
+
+      x_indices = np.linspace(0.0, 1.0, seg_width, dtype=np.float32).reshape(1, seg_width, 1)
+      leftC_resh = leftC.reshape(len(leftC), 1, 3)      # (height,1,3)
+      rightC_resh = rightC.reshape(len(rightC), 1, 3)   # (height,1,3)
+      grad = (1.0 - x_indices)*leftC_resh + x_indices*rightC_resh  # shape (height, seg_width, 3)
+      grad = grad.astype(np.uint8)
+
+      final_result[:, x_start:x_end] = grad
+      bounds.append(x_start)
+      filenames.append((fname, is_proxy_flag))
+      x_start = x_end
+
+    # last boundary
+    last_name = os.path.basename(active_paths[-1])
+    last_proxy = proxy_list[-1]
+    bounds.append(width_total - 1)
+    filenames.append((last_name, last_proxy))
+
+    self.final_image = final_result
+    self.boundary_positions = bounds
+    self.filenames_at_boundaries = filenames
+
+    # if subfolder mode, store
+    if self.current_mode == MODE_SUBFOLDERS and self.subfolder_names:
+      if self.subfolder_combo_idx < len(self.subfolder_names):
+        sf = self.subfolder_names[self.subfolder_combo_idx]
+        fade_data = SubfolderFadeData(
+          final_image=final_result,
+          boundary_positions=bounds[:],
+          filenames_at_boundaries=filenames[:],
+          average_colors=average_colors[:],
+          transitions=transitions[:]
+        )
+        self.subfolder_fade_info[sf] = fade_data
+
+    self._redraw_canvas()
+
+  # -------------------
+  # Export (blocking)
+  # -------------------
 
   def on_export(self):
     """
-    Opens a single Toplevel to ask Steps/FPS, then in the same window we show a progressbar.
+    Opens a simple Toplevel for Steps/FPS. 
+    When user clicks OK, we do everything in the main thread, freezing the UI until done.
     """
     self._build_fade_core()
     if self.final_image is None:
@@ -750,27 +673,24 @@ class FadingUI:
       return
 
     diag = tk.Toplevel(self.root)
-    diag.title("Export Options")
+    diag.title("Export Options (Blocking)")
     diag.configure(bg=BG_COLOR)
 
-    # Frame for param input
-    param_frame = tk.Frame(diag, bg=BG_COLOR)
-    param_frame.pack(side="top", fill="x", padx=10, pady=10)
-
-    tk.Label(param_frame, text="Number of Crossfades:", bg=BG_COLOR).pack(side="top", padx=5, pady=2)
+    tk.Label(diag, text="Number of Crossfades:", bg=BG_COLOR).pack(side="top", padx=5, pady=5)
     steps_var = tk.StringVar(value="10")
-    steps_entry = tk.Entry(param_frame, textvariable=steps_var)
-    steps_entry.pack(side="top", padx=5, pady=2)
+    steps_entry = tk.Entry(diag, textvariable=steps_var)
+    steps_entry.pack(side="top", padx=5, pady=5)
 
-    tk.Label(param_frame, text="Video FPS:", bg=BG_COLOR).pack(side="top", padx=5, pady=2)
+    tk.Label(diag, text="Video FPS:", bg=BG_COLOR).pack(side="top", padx=5, pady=5)
     fps_var = tk.StringVar(value="25")
-    fps_entry = tk.Entry(param_frame, textvariable=fps_var)
-    fps_entry.pack(side="top", padx=5, pady=2)
+    fps_entry = tk.Entry(diag, textvariable=fps_var)
+    fps_entry.pack(side="top", padx=5, pady=5)
 
-    def on_start_export():
+    def on_ok():
       """
-      User clicked 'Start Export'. Hide param input, show progress in the same window.
+      Called when user is ready to export. This will block the UI until done.
       """
+      start_time = time.time()
       try:
         steps_val = int(steps_var.get())
         fps_val = int(fps_var.get())
@@ -780,123 +700,181 @@ class FadingUI:
         messagebox.showerror("Error", "Please provide valid Steps/FPS.")
         return
 
-      # Remove param_frame
-      param_frame.pack_forget()
-
-      # Show progress bar / Cancel in the same diag
-      progress_frame = tk.Frame(diag, bg=BG_COLOR)
-      progress_frame.pack(side="top", fill="x", padx=10, pady=10)
-
-      self.progress_bar = ttk.Progressbar(progress_frame, length=300, mode='determinate')
-      self.progress_bar.pack(side="top", padx=10, pady=10)
-      self.progress_bar['value'] = 0
-      self.progress_bar['maximum'] = 1  # adjusted later
-
-      def on_cancel():
-        self.export_stop_flag = True
-
-      cancel_btn = tk.Button(progress_frame, text="Cancel", command=on_cancel, bg=BG_COLOR)
-      cancel_btn.pack(side="top", padx=5, pady=5)
-
-      # Start export in thread
-      self._run_export_in_thread(steps_val, fps_val, diag)
-
-    start_btn = tk.Button(diag, text="Start Export", command=on_start_export, bg=BG_COLOR)
-    start_btn.pack(side="top", padx=5, pady=5)
-
-  def _run_export_in_thread(self, steps: int, fps: int, diag: tk.Toplevel):
-    """
-    Prepares frames for export, spawns a background thread.
-    'diag' remains open until the thread is done or fails.
-    """
-    self.export_done = False
-    self.export_stop_flag = False
-    self.export_progress = 0
-
-    # Build frames (global crossfade) or single fade
-    frames_preview = self._build_global_subfolder_crossfade(steps)
-    if not frames_preview and self.final_image is not None:
-      frames_preview = [self.final_image]
-
-    # Decide how many total items we have
-    if self.export_images_var.get():
-      self.export_total = len(frames_preview)
-    else:
-      self.export_total = 1
-
-    if self.progress_bar:
-      self.progress_bar['maximum'] = self.export_total
-      self.progress_bar['value'] = 0
-
-    def target():
-      """
-      The real export logic in the background thread.
-      """
-      start_t = time.time()
-
-      base_output = "output"
-      if not os.path.exists(base_output):
-        os.makedirs(base_output)
-
-      # If user wants images => new subfolder
-      if self.export_images_var.get():
-        export_folder = FadingLogic.get_next_output_subfolder()
+      # Build frames or single fade
+      frames = []
+      if self.current_mode == MODE_SUBFOLDERS and len(self.subfolder_names) > 1:
+        frames = self._build_global_subfolder_crossfade(steps_val)
+        if not frames and self.final_image is not None:
+          frames = [self.final_image]
       else:
-        export_folder = base_output
+        # single fade
+        frames = [self.final_image]
 
+      out_folder = "output"
+      if not os.path.exists(out_folder):
+        os.makedirs(out_folder)
+
+      from fading import FadingLogic
       now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
       inf_val = self.influence_slider.get()
       dev_val = self.damping_slider.get()
       dyn_val = self.dynamic_slider.get()
       file_tag = f"{now_str}_fading_Inf{inf_val}_Dev{dev_val}_Dyn{dyn_val}"
 
-      # Save images if requested
+      # Export images if needed
       if self.export_images_var.get():
-        for i, frm in enumerate(frames_preview):
-          if self.export_stop_flag:
-            break
-          cv2.imwrite(os.path.join(export_folder, f"{file_tag}_{i:03d}.png"), frm)
-          self.export_progress += 1
-          time.sleep(0.05)  # simulate time
+        for i, frm in enumerate(frames):
+          cv2.imwrite(os.path.join(out_folder, f"{file_tag}_{i:03d}.png"), frm)
 
-      # Save video if requested
-      if not self.export_stop_flag and self.export_video_var.get():
-        video_name = os.path.join(base_output, f"{file_tag}.mp4")
-        FadingLogic.export_mpeg_video(frames_preview, video_name, fps)
+      # Export video if needed
+      if self.export_video_var.get():
+        videoname = os.path.join(out_folder, f"{file_tag}.mp4")
+        FadingLogic.export_mpeg_video(frames, videoname, fps_val)
 
-      end_t = time.time()
-      elapsed = round(end_t - start_t, 2)
+      end_time = time.time()
+      elapsed = round(end_time - start_time, 2)
       self.status_label.config(text=f"Export done in {elapsed}s => {file_tag}")
-      self.export_done = True
+      diag.destroy()
 
-    self.export_thread = threading.Thread(target=target, daemon=True)
-    self.export_thread.start()
+    ok_btn = tk.Button(diag, text="OK", command=on_ok, bg=BG_COLOR)
+    ok_btn.pack(side="top", padx=5, pady=5)
 
-    # Keep reference to diag
-    self.export_window = diag
-    self.root.after(100, self._check_export_thread)
+  # -------------
+  # Crossfade logic
+  # -------------
 
-  def _check_export_thread(self):
+  def _build_global_subfolder_crossfade(self, steps: int) -> List[np.ndarray]:
     """
-    Periodically checks if export_thread is running, updates progress bar, closes diag on success.
+    Builds frames across all subfolders for a blocking export scenario.
+    Uses the subfolder_fade_info if available, or final_image fallback.
     """
-    if self.export_done:
-      # Thread finished => close diag
-      if self.export_window and self.export_window.winfo_exists():
-        self.export_window.destroy()
-      return
+    frames = []
+    n_sub = len(self.subfolder_names)
+    if n_sub < 1:
+      return frames
 
-    if self.export_thread and not self.export_thread.is_alive():
-      # Unexpected stop
-      if self.export_window and self.export_window.winfo_exists():
-        self.export_window.destroy()
-      self.status_label.config(text="Export thread stopped unexpectedly.")
-      return
+    prev_data = None
+    for i, sf in enumerate(self.subfolder_names):
+      self._load_subfolder_images(i, auto_calc=False)
+      if self.brightness_slider.get() > 0:
+        self._reset_checkboxes()
+        thr = self.brightness_slider.get()
+        for d in self.image_data:
+          if d.brightness_value < thr:
+            d.check_var.set(False)
+      self._build_fade_core()
+      if self.final_image is None:
+        continue
 
-    if self.export_window and self.export_window.winfo_exists() and self.progress_bar:
-      self.progress_bar['value'] = self.export_progress
+      curr_data = self.subfolder_fade_info.get(sf, None)
+      if not curr_data:
+        frames.append(self.final_image.copy())
+        prev_data = None
+        continue
 
-    self.root.after(200, self._check_export_thread)
+      if prev_data is None:
+        frames.append(curr_data.final_image.copy())
+      else:
+        # do dynamic crossfade
+        new_frames = self._build_mix_crossfade(prev_data, curr_data, steps)
+        # skip the first to avoid duplicate
+        frames.extend(new_frames[1:])
+      prev_data = curr_data
+    return frames
+
+  def _build_mix_crossfade(self, fadeA: SubfolderFadeData, fadeB: SubfolderFadeData, steps: int) -> List[np.ndarray]:
+    """
+    Mixes pixel and segment crossfade depending on dynamic slider (0..100).
+    Uses NumPy broadcasting for segment approach.
+    """
+    dyn_val = self.dynamic_slider.get()
+    if dyn_val < 1:
+      return FadingLogic.build_crossfade_sequence(fadeA.final_image, fadeB.final_image, steps)
+    if dyn_val > 99:
+      return self._build_segment_interpolated_crossfade(fadeA, fadeB, steps)
+
+    seg_frames = self._build_segment_interpolated_crossfade(fadeA, fadeB, steps)
+    pix_frames = FadingLogic.build_crossfade_sequence(fadeA.final_image, fadeB.final_image, steps)
+
+    out_frames = []
+    out_frames.append(pix_frames[0].copy())
+    alpha = dyn_val / 100.0
+    for i in range(1, len(pix_frames)):
+      blend = self._blend_two_images(pix_frames[i], seg_frames[i], alpha)
+      out_frames.append(blend)
+    out_frames.append(pix_frames[-1].copy())
+    return out_frames
+
+  def _build_segment_interpolated_crossfade(self, fadeA: SubfolderFadeData, fadeB: SubfolderFadeData, steps: int) -> List[np.ndarray]:
+    """
+    Builds frames using segment-based interpolation with NumPy broadcasting 
+    for better performance, avoiding pixel loops.
+    """
+    frames = []
+    hA, wA, _ = fadeA.final_image.shape
+    hB, wB, _ = fadeB.final_image.shape
+    if (hA != hB) or (wA != wB):
+      return FadingLogic.build_crossfade_sequence(fadeA.final_image, fadeB.final_image, steps)
+
+    bposA = np.array(fadeA.boundary_positions, dtype=np.float32)
+    bposB = np.array(fadeB.boundary_positions, dtype=np.float32)
+    avgA = fadeA.average_colors
+    avgB = fadeB.average_colors
+
+    if len(avgA) != len(avgB) or len(avgA) < 2:
+      return FadingLogic.build_crossfade_sequence(fadeA.final_image, fadeB.final_image, steps)
+
+    frames.append(fadeA.final_image.copy())
+
+    # Convert to arrays for vectorization
+    arrA = np.stack(avgA, axis=0)  # shape (n_seg, height, 3)
+    arrB = np.stack(avgB, axis=0)  # same shape
+    n_seg = arrA.shape[0]
+
+    for s in range(1, steps + 1):
+      alpha = s / (steps + 1)
+      curPos = (1 - alpha)*bposA + alpha*bposB
+      colorArr = (1 - alpha)*arrA + alpha*arrB
+      colorArr = colorArr.astype(np.uint8)  # shape (n_seg, height,3)
+
+      # build final
+      res = np.zeros((hA, wA, 3), dtype=np.uint8)
+      x_start = 0
+      for i_seg in range(n_seg - 1):
+        x_end = int(round(curPos[i_seg+1]))
+        if x_end < x_start:
+          continue
+        if x_end > wA:
+          x_end = wA
+        seg_w = x_end - x_start
+        if seg_w < 1:
+          continue
+
+        leftC = colorArr[i_seg]     # shape (height,3)
+        rightC = colorArr[i_seg+1]  # shape (height,3)
+        x_indices = np.linspace(0.0, 1.0, seg_w, dtype=np.float32).reshape(1, seg_w, 1)
+        leftC_resh = leftC.reshape(hA, 1, 3)
+        rightC_resh = rightC.reshape(hA, 1, 3)
+        grad = (1.0 - x_indices)*leftC_resh + x_indices*rightC_resh
+        grad = grad.astype(np.uint8)
+        res[:, x_start:x_end] = grad
+        x_start = x_end
+
+      frames.append(res)
+
+    frames.append(fadeB.final_image.copy())
+    return frames
+
+  def _blend_two_images(self, imgA: np.ndarray, imgB: np.ndarray, alpha: float) -> np.ndarray:
+    """
+    Blends two images (same size) with given alpha in [0..1], 
+    using cv2.addWeighted for vectorized merging.
+    """
+    hA, wA, _ = imgA.shape
+    hB, wB, _ = imgB.shape
+    if (hA != hB) or (wA != wB):
+      imgB = cv2.resize(imgB, (wA, hA))
+    return cv2.addWeighted(imgA, 1.0 - alpha, imgB, alpha, 0)
 
   # -------------
   # Canvas
@@ -906,10 +884,13 @@ class FadingUI:
     self._redraw_canvas()
 
   def _redraw_canvas(self):
+    """
+    Draws self.final_image on the display_canvas with resizing,
+    plus boundary filenames at the bottom.
+    """
     if self.final_image is None:
       self.display_canvas.delete("all")
       return
-
     cw = self.display_canvas.winfo_width()
     ch = self.display_canvas.winfo_height()
     if cw < 10 or ch < 10:
