@@ -9,6 +9,137 @@ class FadingLogic:
   """
   Holds all basic fading and crossfade related logic.
   """
+  
+  @staticmethod
+  def crossfade_subfolders_onto_writer(
+    ui_obj,
+    writer: cv2.VideoWriter,
+    steps: int,
+    progress_bar,
+    diag,
+    out_folder: str,
+    file_tag: str,
+    export_images: bool
+  ):
+    """
+    On-the-fly subfolder crossfade:
+      - Loops over ui_obj.subfolder_names
+      - For each subfolder transition i -> i+1, 
+        loads i and i+1, calls _call_build_fade_core, 
+        immediately writes frames to 'writer' 
+        without returning a huge list.
+
+    progress_bar: used to .step() or set value after each subfolder
+    diag: the Toplevel window, so we can call diag.update_idletasks()
+    out_folder, file_tag: if export_images == True, we can also store frames on the fly.
+    """
+
+    n_sub = len(ui_obj.subfolder_names)
+    if n_sub < 2:
+      return
+
+    # We'll iterate over pairs (i -> i+1)
+    for i in range(n_sub - 1):
+      # load subfolder i
+      ui_obj._load_subfolder_images(i, auto_calc=False)
+      # apply brightness filter if needed
+      if ui_obj.brightness_slider.get() > 0:
+        ui_obj._reset_checkboxes()
+        thr = ui_obj.brightness_slider.get()
+        for d in ui_obj.image_data:
+          if d.brightness_value < thr:
+            d.check_var.set(False)
+      ui_obj._call_build_fade_core()
+      # this yields ui_obj.final_image for subfolder i
+
+      fadeDataA = ui_obj.subfolder_fade_info.get(ui_obj.subfolder_names[i], None)
+      if not fadeDataA:
+        # fallback
+        fadeDataA = SubfolderFadeData(
+          final_image=ui_obj.final_image.copy(),
+          boundary_positions=[],
+          filenames_at_boundaries=[],
+          average_colors=[],
+          transitions=[]
+        )
+
+      # load subfolder i+1
+      ui_obj._load_subfolder_images(i + 1, auto_calc=False)
+      if ui_obj.brightness_slider.get() > 0:
+        ui_obj._reset_checkboxes()
+        thr = ui_obj.brightness_slider.get()
+        for d in ui_obj.image_data:
+          if d.brightness_value < thr:
+            d.check_var.set(False)
+      ui_obj._call_build_fade_core()
+      fadeDataB = ui_obj.subfolder_fade_info.get(ui_obj.subfolder_names[i+1], None)
+      if not fadeDataB:
+        fadeDataB = SubfolderFadeData(
+          final_image=ui_obj.final_image.copy(),
+          boundary_positions=[],
+          filenames_at_boundaries=[],
+          average_colors=[],
+          transitions=[]
+        )
+
+      # Now we do a crossfade i -> i+1 on the fly
+      FadingLogic._crossfade_two_subfolder_data_onto_writer(
+        fadeDataA, fadeDataB, writer, steps, out_folder, file_tag, export_images
+      )
+
+      # After finishing crossfade for subfolder i->i+1:
+      progress_bar['value'] += 1
+      diag.update_idletasks()
+      # release any large memory if needed
+      # e.g. del fadeDataA, fadeDataB ?
+
+  @staticmethod
+  def _crossfade_two_subfolder_data_onto_writer(
+    fadeA: SubfolderFadeData,
+    fadeB: SubfolderFadeData,
+    writer: cv2.VideoWriter,
+    steps: int,
+    out_folder: str,
+    file_tag: str,
+    export_images: bool
+  ):
+    """
+    Builds crossfade frames from fadeA -> fadeB on the fly.
+    Writes each frame directly to 'writer' (if not None).
+    Optionally also saves each frame to disk if export_images is True.
+
+    No large list is accumulated in memory.
+    """
+    if fadeA is None or fadeB is None:
+      return
+
+    hA, wA, _ = fadeA.final_image.shape
+    hB, wB, _ = fadeB.final_image.shape
+    if (hA != hB) or (wA != wB):
+      # fallback: just do a normal crossfade of final_image shapes
+      frames = FadingLogic.build_crossfade_sequence(fadeA.final_image, fadeB.final_image, steps)
+      # but we still do on-the-fly writing
+      for idx, fr in enumerate(frames):
+        if writer is not None:
+          writer.write(fr)
+        if export_images:
+          cv2.imwrite(os.path.join(out_folder, f"{file_tag}_subfade_{idx:03d}.png"), fr)
+      return
+
+    # If subfolder data has average_colors, boundary_positions, etc. => do segment approach
+    # Or just do the simpler approach? 
+    # We re-use the "build_segment_interpolated_crossfade" if dyn_val>some, 
+    # or "build_crossfade_sequence" if dyn_val<some...
+    # For simplicity, let's do a single approach. You can adapt as needed.
+
+    # Example: purely pixel crossfade
+    frames = FadingLogic.build_crossfade_sequence(fadeA.final_image, fadeB.final_image, steps)
+    for idx, fr in enumerate(frames):
+      if writer is not None:
+        writer.write(fr)
+      if export_images:
+        # you can store them with subfolder i info
+        cv2.imwrite(os.path.join(out_folder, f"{file_tag}_subfade_{idx:03d}.png"), fr)
 
   @staticmethod
   def parse_utc_offset(filepath: str) -> float:
