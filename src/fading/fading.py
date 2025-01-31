@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import os
 import re
+import math
 from typing import Tuple, List
 from datamodel import SubfolderFadeData
 
@@ -462,7 +463,8 @@ class FadingLogic:
     wA2 = wA
 
     for s in range(1, steps + 1):
-      alpha = s / (steps + 1)
+      ratio = s / (steps + 1)
+      alpha = 0.5 * (1 - math.cos(math.pi * ratio))
       curPos = (1 - alpha)*bposA + alpha*bposB
       colorArr = (1 - alpha)*arrA + alpha*arrB
       colorArr = colorArr.astype(np.uint8)
