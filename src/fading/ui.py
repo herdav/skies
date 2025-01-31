@@ -14,8 +14,6 @@ from datamodel import ImageData, SubfolderFadeData
 # Fade logic (extracted from the UI)
 import fading
 
-# Export logic
-import export
 
 BG_COLOR = "#dcdcdc"
 TEXT_BG_COLOR = (220, 220, 220, 255)
@@ -591,7 +589,8 @@ class FadingUI:
 
   def on_export(self):
     """
-    Blocking export. Uses export.perform_export() for writing images/videos.
+    Blocking export with on-the-fly encoding and a progress bar that updates 
+    when each subfolder transition is completed.
     """
     self._call_build_fade_core()
     if self.final_image is None:
@@ -599,7 +598,7 @@ class FadingUI:
       return
 
     diag = tk.Toplevel(self.root)
-    diag.title("Export Options (Blocking)")
+    diag.title("Export Options (Blocking, On-the-fly)")
     diag.configure(bg=BG_COLOR)
 
     tk.Label(diag, text="Number of Crossfades:", bg=BG_COLOR).pack(side="top", padx=5, pady=5)
@@ -612,6 +611,18 @@ class FadingUI:
     fps_entry = tk.Entry(diag, textvariable=fps_var)
     fps_entry.pack(side="top", padx=5, pady=5)
 
+    # We'll add a progress bar below that
+    progress_frame = tk.Frame(diag, bg=BG_COLOR)
+    progress_frame.pack(side="top", fill="x", padx=10, pady=10)
+
+    prog_label = tk.Label(progress_frame, text="Subfolder Progress:", bg=BG_COLOR)
+    prog_label.pack(side="top", padx=5, pady=2)
+
+    progress_bar = ttk.Progressbar(progress_frame, length=300, mode='determinate')
+    progress_bar.pack(side="top", padx=10, pady=2)
+
+    # We haven't set maximum yet, because we first read the subfolder count
+
     def on_ok():
       start_time = time.time()
       try:
@@ -623,15 +634,6 @@ class FadingUI:
         messagebox.showerror("Error", "Please provide valid Steps/FPS.")
         return
 
-      # Build frames or single fade
-      frames = []
-      if self.current_mode == MODE_SUBFOLDERS and len(self.subfolder_names) > 1:
-        frames = fading.FadingLogic.build_global_subfolder_crossfade(self, steps_val)
-        if not frames and self.final_image is not None:
-          frames = [self.final_image]
-      else:
-        frames = [self.final_image]
-
       out_folder = "output"
       if not os.path.exists(out_folder):
         os.makedirs(out_folder)
@@ -642,15 +644,51 @@ class FadingUI:
       dyn_val = self.dynamic_slider.get()
       file_tag = f"{now_str}_fading_Inf{inf_val}_Dev{dev_val}_Dyn{dyn_val}"
 
-      # Call export logic
-      export.perform_export(
-        frames=frames,
-        out_folder=out_folder,
-        file_tag=file_tag,
-        fps=fps_val,
-        export_images=self.export_images_var.get(),
-        export_video=self.export_video_var.get()
-      )
+      # Construct the video writer on the fly
+      height, width, _ = self.final_image.shape  # use final_image shape
+      fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+      video_name = os.path.join(out_folder, f"{file_tag}.mp4")
+
+      # If the user only wants images, skip creating writer
+      # (But let's handle the case: if export_video_var == True, then do writer)
+      writer = None
+      if self.export_video_var.get():
+        writer = cv2.VideoWriter(video_name, fourcc, float(fps_val), (width, height), True)
+
+      # We'll pass the writer to a new on-the-fly subfolder crossfade
+      # Meanwhile, if the user also wants images, 
+      # we can store them on the fly as well... or skip it for now.
+
+      # Decide how many subfolders to process
+      n_sub = len(self.subfolder_names)
+      progress_bar['value'] = 0
+      if self.current_mode == MODE_SUBFOLDERS and n_sub > 1:
+        # We'll set the progress bar max to the number of transitions: n_sub-1
+        progress_bar['maximum'] = n_sub - 1
+
+        # Actually do the on-the-fly subfolder crossfade
+        fading.FadingLogic.crossfade_subfolders_onto_writer(
+          ui_obj=self,
+          writer=writer,
+          steps=steps_val,
+          progress_bar=progress_bar,
+          diag=diag,
+          out_folder=out_folder,
+          file_tag=file_tag,
+          export_images=self.export_images_var.get()
+        )
+      else:
+        # If not multiple subfolders, we just have one final_image or so
+        # We can just write that single image or single fade on the fly:
+        if writer is not None:
+          # just write final_image as a single frame repeated, or skip
+          writer.write(self.final_image)
+        # If export images is True
+        if self.export_images_var.get():
+          cv2.imwrite(os.path.join(out_folder, f"{file_tag}_000.png"), self.final_image)
+
+      if writer is not None:
+        writer.release()
 
       end_time = time.time()
       elapsed = round(end_time - start_time, 2)
