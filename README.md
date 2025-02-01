@@ -2,4 +2,4 @@
 
 
 ## GUI
-![capture](https://github.com/herdav/globalWebCams/blob/main/img/GUI.png)
+![capture](https://github.com/herdav/globalSkyCams/blob/main/img/GUI.png)
