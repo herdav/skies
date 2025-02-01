@@ -1,5 +1,5 @@
-# globalSkyCams
+# globalSkyCam
 
 
 ## GUI
-![capture](https://github.com/herdav/globalSkyCams/blob/main/img/GUI.png)
+![capture](https://github.com/herdav/globalSkyCam/blob/main/img/GUI.png)
