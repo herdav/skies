@@ -1,16 +1,11 @@
-import cv2
-import numpy as np
 import os
+import cv2
 import re
-import math
+import numpy as np
 from typing import Tuple, List
 from datamodel import SubfolderFadeData
 
 class FadingLogic:
-  """
-  Holds all basic fading and crossfade related logic.
-  """
-  
   @staticmethod
   def crossfade_subfolders_onto_writer(
     ui_obj,
@@ -22,113 +17,107 @@ class FadingLogic:
     file_tag: str,
     export_images: bool
   ):
+    """
+    On-the-fly subfolder crossfade using a keyframe approach.
+    We do NOT do a separate crossfade for each subfolder i->i+1 independently.
+    Instead, we:
+
+    1) Collect 'keyframes' by loading each subfolder, calling build_fade_core, 
+       storing the boundary positions and average colors in subfolder_fade_info.
+
+    2) Then we do one global pass building transitions 
+       from subfolder 0->1->2->...->(n-1). 
+       This creates a fluid movement with no 'stop' at each boundary.
+    """
+
     n_sub = len(ui_obj.subfolder_names)
     if n_sub < 2:
       return
 
-    # Read the dynamic slider once here:
+    # dynamic segments slider
     dyn_val = ui_obj.dynamic_slider.get()
 
-    for i in range(n_sub - 1):
-      # load subfolder i
+    # -------------------------------------------------
+    # PHASE 1: PRECOMPUTE KEYFRAMES
+    # -------------------------------------------------
+    # We'll gather a 'SubfolderFadeData' for each subfolder i
+    # by loading each subfolder, applying brightness filter if needed,
+    # then calling build_fade_core. 
+    # The result is stored in ui_obj.subfolder_fade_info[sf].
+    
+    keyframes_data = []
+
+    for i, sf in enumerate(ui_obj.subfolder_names):
+      # 1) load subfolder i => no auto_calc, so we can manually do a brightness filter
       ui_obj._load_subfolder_images(i, auto_calc=False)
+
+      # optional brightness filter if slider>0
       if ui_obj.brightness_slider.get() > 0:
         ui_obj._reset_checkboxes()
         thr = ui_obj.brightness_slider.get()
         for d in ui_obj.image_data:
           if d.brightness_value < thr:
             d.check_var.set(False)
+
+      # 2) call build fade => this populates subfolder_fade_info[sf]
       ui_obj._call_build_fade_core()
 
-      fadeDataA = ui_obj.subfolder_fade_info.get(ui_obj.subfolder_names[i], None)
-      if not fadeDataA:
-        fadeDataA = SubfolderFadeData(
+      # retrieve the fadeData from subfolder_fade_info
+      fadeData = ui_obj.subfolder_fade_info.get(sf, None)
+      if fadeData is None:
+        # fallback: empty
+        fadeData = SubfolderFadeData(
           final_image=ui_obj.final_image.copy(),
           boundary_positions=[],
           filenames_at_boundaries=[],
           average_colors=[],
           transitions=[]
         )
+      keyframes_data.append(fadeData)
 
-      # load subfolder i+1
-      ui_obj._load_subfolder_images(i + 1, auto_calc=False)
-      if ui_obj.brightness_slider.get() > 0:
-        ui_obj._reset_checkboxes()
-        thr = ui_obj.brightness_slider.get()
-        for d in ui_obj.image_data:
-          if d.brightness_value < thr:
-            d.check_var.set(False)
-      ui_obj._call_build_fade_core()
-
-      fadeDataB = ui_obj.subfolder_fade_info.get(ui_obj.subfolder_names[i+1], None)
-      if not fadeDataB:
-        fadeDataB = SubfolderFadeData(
-          final_image=ui_obj.final_image.copy(),
-          boundary_positions=[],
-          filenames_at_boundaries=[],
-          average_colors=[],
-          transitions=[]
-        )
-
-      # Now we do a crossfade i -> (i+1) on the fly, passing dyn_val
-      FadingLogic._crossfade_two_subfolder_data_onto_writer(
-        fadeDataA, fadeDataB, writer, steps, out_folder, file_tag, export_images, dyn_val
-      )
-
-      # Progress bar
-      progress_bar['value'] += 1
-      diag.update_idletasks()
-
-  @staticmethod
-  def _crossfade_two_subfolder_data_onto_writer(
-    fadeA: SubfolderFadeData,
-    fadeB: SubfolderFadeData,
-    writer: cv2.VideoWriter,
-    steps: int,
-    out_folder: str,
-    file_tag: str,
-    export_images: bool,
-    dyn_val: float
-  ):
-    """
-    Builds crossfade frames from fadeA -> fadeB on the fly.
-    Chooses pixel-only, segment-only, or mixed approach 
-    based on dyn_val (Dynamic Segments slider).
-    Writes each frame directly to 'writer' (if not None).
-    Optionally also saves each frame to disk if export_images is True.
-    """
-    if fadeA is None or fadeB is None:
+    # if there's only 1 subfolder with images, we cannot crossfade
+    if len(keyframes_data) < 2:
       return
 
-    hA, wA, _ = fadeA.final_image.shape
-    hB, wB, _ = fadeB.final_image.shape
-    if (hA != hB) or (wA != wB):
-      # fallback: just do a normal crossfade of final_image shapes
-      frames = FadingLogic.build_crossfade_sequence(fadeA.final_image, fadeB.final_image, steps)
+    # -------------------------------------------------
+    # PHASE 2: BUILD GLOBAL ANIMATION
+    # -------------------------------------------------
+    # We'll do a single pass over subfolders from i=0..(n_sub-2),
+    # each time building transitions i->i+1 in 'steps' frames.
+    # We handle 'pixel only', 'segment only', or 'mix' depending on dyn_val.
+    # Then we write frames on-the-fly to 'writer', also exporting images if requested.
+    # We'll update the progress bar once per subfolder transition.
+
+    for i in range(n_sub - 1):
+      # update progress bar 
+      progress_bar['value'] = i
+      diag.update_idletasks()
+
+      fadeA = keyframes_data[i]
+      fadeB = keyframes_data[i + 1]
+
+      # decide method based on dyn_val
+      if dyn_val < 1:
+        # purely pixel crossfade
+        frames = FadingLogic.build_crossfade_sequence(fadeA.final_image, fadeB.final_image, steps)
+      elif dyn_val > 99:
+        # purely segment approach
+        frames = FadingLogic.build_segment_interpolated_crossfade(fadeA, fadeB, steps)
+      else:
+        # mixed crossfade
+        frames = FadingLogic.build_mix_crossfade(fadeA, fadeB, dyn_val, steps)
+
+      # on-the-fly writing:
+      # typically frames has steps+2 items (start, steps of crossfade, end)
+      # you can skip the last frame to avoid duplicates 
+      # if you want a super-smooth sequence with no 'stop'. 
+      
       for idx, fr in enumerate(frames):
         if writer is not None:
           writer.write(fr)
         if export_images:
-          cv2.imwrite(os.path.join(out_folder, f"{file_tag}_subfade_{idx:03d}.png"), fr)
-      return
-
-    # Now we decide which fade method to use:
-    if dyn_val < 1:
-      # purely pixel crossfade
-      frames = FadingLogic.build_crossfade_sequence(fadeA.final_image, fadeB.final_image, steps)
-    elif dyn_val > 99:
-      # purely segment
-      frames = FadingLogic.build_segment_interpolated_crossfade(fadeA, fadeB, steps)
-    else:
-      # mixed crossfade
-      frames = FadingLogic.build_mix_crossfade(fadeA, fadeB, dyn_val, steps)
-
-    # Then we write the frames on the fly
-    for idx, fr in enumerate(frames):
-      if writer is not None:
-        writer.write(fr)
-      if export_images:
-        cv2.imwrite(os.path.join(out_folder, f"{file_tag}_subfade_{idx:03d}.png"), fr)
+          # store frames with subfolder i info if you like
+          cv2.imwrite(os.path.join(out_folder, f"{file_tag}_{i}_{idx:03d}.png"), fr)
 
   @staticmethod
   def parse_utc_offset(filepath: str) -> float:
@@ -211,11 +200,16 @@ class FadingLogic:
     return grad.astype(np.uint8)
 
   @staticmethod
-  def build_crossfade_sequence(imgA: np.ndarray, imgB: np.ndarray, steps: int) -> list:
+  def build_crossfade_sequence(imgA: np.ndarray, imgB: np.ndarray, steps: int) -> List[np.ndarray]:
+    """
+    Simple pixel-based crossfade:
+    linearly blends from imgA to imgB over 'steps' intermediate frames.
+    """
     frames = []
     hA, wA, _ = imgA.shape
     hB, wB, _ = imgB.shape
     if (hA != hB) or (wA != wB):
+      # fallback => resize B
       imgB = cv2.resize(imgB, (wA, hA))
     frames.append(imgA.copy())
     for i in range(1, steps + 1):
@@ -227,6 +221,9 @@ class FadingLogic:
 
   @staticmethod
   def export_mpeg_video(frames: list, filename: str, fps: int = 25):
+    """
+    Exports a list of frames to an MP4 video file.
+    """
     if not frames:
       return
     height, width, _ = frames[0].shape
@@ -249,40 +246,43 @@ class FadingLogic:
       damping_percent: float
     ):
     """
-    Formerly _build_fade_core. Returns (final_image, boundary_positions, filenames_at_boundaries)
-    or None if no fade is built.
-    """
-    import cv2
-    import numpy as np
+    Creates a single horizontal fade from a set of 'active_paths'.
+    Returns (final_image, boundary_positions, filenames_at_boundaries, average_colors).
+    If something fails (like not enough paths), returns None.
 
-    n = len(active_paths)
-    if n < 2:
+    The 'influence_val' affects how brightness influences transition weighting.
+    'damping_percent' limits how far we deviate from the original distribution.
+    """
+    if len(active_paths) < 2:
       return None
 
     final_result = np.zeros((height_total, width_total, 3), dtype=np.uint8)
     bounds = []
     filenames = []
     average_colors = []
-    transitions = []
 
-    # Load row-wise averages
-    for path in active_paths:
+    n = len(active_paths)
+
+    # 1) load average color for each path
+    loaded_colors = []
+    for idx, path in enumerate(active_paths):
       img = cv2.imread(path)
       if img is None:
-        dummy = np.zeros((10, 10, 3), dtype=np.uint8)
-        ratio = height_total / 10
+        # black dummy
+        dummy = np.zeros((10,10,3), dtype=np.uint8)
+        ratio = height_total / 10.0
         new_w = max(1, int(10 * ratio))
         resized = cv2.resize(dummy, (new_w, height_total))
         avg = FadingLogic.calculate_horizontal_average(resized)
-        average_colors.append(avg)
       else:
-        ratio = height_total / img.shape[0]
+        ratio = float(height_total) / float(img.shape[0])
         new_w = max(1, int(img.shape[1] * ratio))
         resized = cv2.resize(img, (new_w, height_total))
         avg = FadingLogic.calculate_horizontal_average(resized)
-        average_colors.append(avg)
+      loaded_colors.append(avg)
 
-    # Compute transitions with Influence
+    # 2) compute transition weighting
+    transitions = []
     original_transitions = []
     for i in range(n - 1):
       ab = (brightness_list[i] + brightness_list[i+1]) / 2.0
@@ -291,7 +291,7 @@ class FadingLogic:
         wgt = 1.0
       else:
         safe_bright = max(1, ab)
-        wgt = safe_bright ** influence_val
+        wgt = (safe_bright ** influence_val)
         if wgt < 1e-6:
           wgt = 0
       transitions.append(wgt)
@@ -299,7 +299,7 @@ class FadingLogic:
 
     total_w = sum(transitions)
     if total_w <= 0:
-      return None  # no fade
+      return None
 
     sum_orig = sum(original_transitions)
     x_start = 0
@@ -337,8 +337,8 @@ class FadingLogic:
         filenames.append((fname, is_proxy_flag))
         continue
 
-      leftC = average_colors[i]
-      rightC = average_colors[i+1]
+      leftC = loaded_colors[i]
+      rightC = loaded_colors[i+1]
       seg_width = x_end - x_start
       if seg_width < 1:
         bounds.append(x_start)
@@ -362,48 +362,10 @@ class FadingLogic:
     bounds.append(width_total - 1)
     filenames.append((last_name, last_proxy))
 
-    return (final_result, bounds, filenames, average_colors)
-
-  @staticmethod
-  def build_global_subfolder_crossfade(ui_obj, steps: int) -> List[np.ndarray]:
-    """
-    Formerly _build_global_subfolder_crossfade, 
-    but since it references data in ui_obj, we pass ui_obj here.
-    Alternatively, we could pass subfolder_names, subfolder_data, etc.
-    Returns a list of frames.
-    """
-    frames = []
-    n_sub = len(ui_obj.subfolder_names)
-    if n_sub < 1:
-      return frames
-
-    prev_data = None
-    for i, sf in enumerate(ui_obj.subfolder_names):
-      ui_obj._load_subfolder_images(i, auto_calc=False)
-      # apply brightness filter if needed
-      if ui_obj.brightness_slider.get() > 0:
-        ui_obj._reset_checkboxes()
-        thr = ui_obj.brightness_slider.get()
-        for d in ui_obj.image_data:
-          if d.brightness_value < thr:
-            d.check_var.set(False)
-      ui_obj._call_build_fade_core()
-      if ui_obj.final_image is None:
-        continue
-
-      curr_data = ui_obj.subfolder_fade_info.get(sf, None)
-      if not curr_data:
-        frames.append(ui_obj.final_image.copy())
-        prev_data = None
-        continue
-
-      if prev_data is None:
-        frames.append(curr_data.final_image.copy())
-      else:
-        new_frames = FadingLogic.build_mix_crossfade(prev_data, curr_data, ui_obj.dynamic_slider.get(), steps)
-        frames.extend(new_frames[1:])
-      prev_data = curr_data
-    return frames
+    # Return 4 items if you want to do segment-based crossfade:
+    # For backwards compatibility in this example,
+    # we used to return only 3. We'll do 4 to allow segment approach:
+    return (final_result, bounds, filenames, loaded_colors)
 
   @staticmethod
   def build_mix_crossfade(
@@ -413,8 +375,10 @@ class FadingLogic:
       steps: int
     ) -> List[np.ndarray]:
     """
-    Formerly _build_mix_crossfade. 
     Mixes pixel fade and segment fade depending on dyn_val (0..100).
+    If dyn_val < 1 => pure pixel,
+       dyn_val > 99 => pure segment,
+       else => an alpha-blend of both approaches in each frame.
     """
     if dyn_val < 1:
       return FadingLogic.build_crossfade_sequence(fadeA.final_image, fadeB.final_image, steps)
@@ -434,10 +398,10 @@ class FadingLogic:
     return out_frames
 
   @staticmethod
-  def build_segment_interpolated_crossfade(fadeA: SubfolderFadeData, fadeB: SubfolderFadeData, steps: int) -> List[np.ndarray]:
+  def build_segment_interpolated_crossfade(fadeA, fadeB, steps: int, use_easing: bool = False):
     """
-    Formerly _build_segment_interpolated_crossfade. 
-    Uses vector approach with broadcasting.
+    If use_easing=True, we do a cubic ease-in-out (easeInOutCubic).
+    If use_easing=False, we do a linear interpolation alpha = t.
     """
     frames = []
     hA, wA, _ = fadeA.final_image.shape
@@ -445,7 +409,6 @@ class FadingLogic:
     if (hA != hB) or (wA != wB):
       return FadingLogic.build_crossfade_sequence(fadeA.final_image, fadeB.final_image, steps)
 
-    import numpy as np
     bposA = np.array(fadeA.boundary_positions, dtype=np.float32)
     bposB = np.array(fadeB.boundary_positions, dtype=np.float32)
     avgA = fadeA.average_colors
@@ -459,14 +422,29 @@ class FadingLogic:
     arrA = np.stack(avgA, axis=0)
     arrB = np.stack(avgB, axis=0)
     n_seg = arrA.shape[0]
-    hA2 = hA
-    wA2 = wA
+    hA2, wA2 = hA, wA
+
+    def ease_in_out_cubic(t: float) -> float:
+      if t < 0.5:
+        return 4.0 * (t**3)
+      else:
+        return 1.0 - 4.0 * ((1.0 - t)**3)
 
     for s in range(1, steps + 1):
-      ratio = s / (steps + 1)
-      alpha = 0.5 * (1 - math.cos(math.pi * ratio))
-      curPos = (1 - alpha)*bposA + alpha*bposB
-      colorArr = (1 - alpha)*arrA + alpha*arrB
+      t = s / (steps + 1)
+      if use_easing:
+        alpha = ease_in_out_cubic(t)
+      else:
+        # linear
+        alpha = t
+
+      # optional clamp
+      alpha = max(0.0, min(1.0, alpha))
+
+      # boundary interpolation
+      curPos = (1.0 - alpha)*bposA + alpha*bposB
+      # color interpolation
+      colorArr = (1.0 - alpha)*arrA + alpha*arrB
       colorArr = colorArr.astype(np.uint8)
 
       res = np.zeros((hA2, wA2, 3), dtype=np.uint8)
@@ -499,8 +477,8 @@ class FadingLogic:
   @staticmethod
   def blend_two_images(imgA: np.ndarray, imgB: np.ndarray, alpha: float) -> np.ndarray:
     """
-    Formerly _blend_two_images. 
-    Blends two images using cv2.addWeighted.
+    Blends two images of the same size using cv2.addWeighted.
+    If sizes differ, we resize B to match A.
     """
     hA, wA, _ = imgA.shape
     hB, wB, _ = imgB.shape
