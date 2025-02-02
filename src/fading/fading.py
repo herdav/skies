@@ -22,9 +22,9 @@ class FadingLogic:
     """
     Performs an on-the-fly subfolder crossfade using a keyframe approach.
     
-    Instead of doing separate crossfades for each subfolder transition, a global
-    transition over all keyframes is created. The x-positions (segment boundaries)
-    are interpolated using either a spline (if use_spline=True) or linear interpolation,
+    Instead of performing separate crossfades for each subfolder transition, a global
+    transition is created over all keyframes. The x-positions (segment boundaries) are
+    interpolated using either a CubicSpline (if use_spline=True) or linear interpolation,
     while the average colors are interpolated linearly.
     
     Args:
@@ -42,14 +42,12 @@ class FadingLogic:
     if n_sub < 2:
       return
 
-    # Dynamic segments slider (not used in the spline-based global approach)
+    # Dynamic segments slider (not used in this spline-based approach)
     dyn_val = ui_obj.dynamic_slider.get()
 
     # ---------------------------------------------------------------------
     # PHASE 1: PRECOMPUTE KEYFRAMES
     # ---------------------------------------------------------------------
-    # For each subfolder, load the images, apply brightness filtering if needed,
-    # then build the fade; the results are stored in ui_obj.subfolder_fade_info.
     keyframes_data = []
     for i, sf in enumerate(ui_obj.subfolder_names):
       # Load subfolder i (without auto_calc for manual brightness filtering)
@@ -82,16 +80,18 @@ class FadingLogic:
     # Each keyframe is assumed to contain:
     #   - boundary_positions: list of x-coordinates for segment boundaries
     #   - average_colors: list of average color arrays (each of shape (h, 3))
-    #
-    # For the x-positions, if use_spline is True, a CubicSpline is created for each
-    # boundary index over the normalized keyframe times. Otherwise, linear interpolation is used.
     keyframe_times = np.linspace(0, 1, len(keyframes_data))
     n_boundaries = len(keyframes_data[0].boundary_positions)
-    boundary_splines = []
-    for j in range(n_boundaries):
-      positions = [keyframes_data[i].boundary_positions[j] for i in range(len(keyframes_data))]
-      spline = CubicSpline(keyframe_times, positions)
-      boundary_splines.append(spline)
+    
+    if use_spline:
+      # Use CubicSpline for exact interpolation.
+      boundary_splines = []
+      for j in range(n_boundaries):
+        positions = [keyframes_data[i].boundary_positions[j] for i in range(len(keyframes_data))]
+        spline = CubicSpline(keyframe_times, positions)
+        boundary_splines.append(spline)
+    else:
+      boundary_splines = None
 
     total_frames = steps * (len(keyframes_data) - 1)
 
@@ -99,7 +99,7 @@ class FadingLogic:
       t_global = f / total_frames
 
       # Interpolate x-positions for segment boundaries:
-      if use_spline:
+      if boundary_splines is not None:
         global_boundaries = [int(round(float(spline(t_global)))) for spline in boundary_splines]
       else:
         pos = t_global * (len(keyframes_data) - 1)
@@ -114,7 +114,7 @@ class FadingLogic:
           for j in range(n_boundaries)
         ]
 
-      # For colors, perform linear interpolation between the two keyframes:
+      # Interpolate colors linearly between the two keyframes:
       pos = t_global * (len(keyframes_data) - 1)
       i = int(np.floor(pos))
       local_t = pos - i
@@ -136,6 +136,13 @@ class FadingLogic:
       if global_boundaries[-1] != w:
         global_boundaries.append(w)
         global_avg_colors.append(global_avg_colors[-1])
+      
+      # Ensure that boundaries are strictly increasing.
+      for idx in range(1, len(global_boundaries)):
+        if global_boundaries[idx] <= global_boundaries[idx-1]:
+          global_boundaries[idx] = global_boundaries[idx-1] + 1
+          if global_boundaries[idx] > w:
+            global_boundaries[idx] = w
 
       # Build the current frame using horizontal gradients between the interpolated colors.
       frame = np.zeros((h, w, 3), dtype=np.uint8)
@@ -143,23 +150,24 @@ class FadingLogic:
         x0 = global_boundaries[j]
         x1 = global_boundaries[j + 1]
         seg_w = x1 - x0
-        if seg_w <= 0:
-          continue
-        # The global average colors are arrays of shape (h, 3)
+        # # If segment width is less than 1 pixel, force a minimum of 1 pixel.
+        # if seg_w < 1:
+        #   seg_w = 1
+        #   x1 = min(x0 + 1, w)
         left_color = global_avg_colors[j].reshape(h, 1, 3)
         right_color = global_avg_colors[j + 1].reshape(h, 1, 3)
         x_indices = np.linspace(0.0, 1.0, seg_w).reshape(1, seg_w, 1)
         grad = (1.0 - x_indices) * left_color + x_indices * right_color
-        frame[:, x0:x1] = grad.astype(np.uint8)
-
+        # Assign gradient only if the slice shape matches.
+        if frame[:, x0:x1].shape[1] == grad.shape[1]:
+          frame[:, x0:x1] = grad.astype(np.uint8)
       if writer is not None:
         writer.write(frame)
       if export_images:
         cv2.imwrite(os.path.join(out_folder, f"{file_tag}_global_{f:03d}.png"), frame)
-
       progress_bar['value'] = f
       diag.update_idletasks()
-
+      
   @staticmethod
   def parse_utc_offset(filepath: str) -> float:
     """
