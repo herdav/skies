@@ -7,7 +7,6 @@ import numpy as np
 class ImageData:
   """
   Holds information about a single image:
-
   file_path: the absolute path
   check_var: a BooleanVar (whether the image is included in the fade)
   brightness_value: used for filtering
@@ -24,7 +23,6 @@ class ImageData:
 class SubfolderFadeData:
   """
   Contains the final fade result for a subfolder:
-
   final_image: the BGR (OpenCV) image of the fade
   boundary_positions: list of x-coordinates for segment boundaries
   filenames_at_boundaries: list of (filename, is_proxy)
@@ -36,3 +34,13 @@ class SubfolderFadeData:
   filenames_at_boundaries: List[tuple]
   average_colors: List[np.ndarray]
   transitions: List[float]
+
+@dataclass
+class FadeParams:
+  """
+  Holds the core parameters for building a fade.
+  """
+  width: int
+  height: int
+  influence: float
+  damping_percent: float
