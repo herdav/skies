@@ -1,4 +1,4 @@
-# globalSkyCam
+# skies
 
 
 ## GUI
