@@ -9,6 +9,8 @@ import subprocess
 from datetime import datetime
 import time
 
+MIN_SEG_DIST = 6 # if resolution is 5760x1080px
+
 
 class ImageHelper:
     @staticmethod
@@ -45,13 +47,13 @@ class FadingLogic:
                 om = subfolder_data[subfolder_names[k]]
                 if offset in om:
                     return om[offset][0], True
-            return FadingLogic.create_black_dummy_image(offset), True
+            return FadingLogic.create_black_dummy(offset), True
         if i == len(subfolder_names) - 1:
             for k in range(len(subfolder_names) - 2, -1, -1):
                 om = subfolder_data[subfolder_names[k]]
                 if offset in om:
                     return om[offset][0], True
-            return FadingLogic.create_black_dummy_image(offset), True
+            return FadingLogic.create_black_dummy(offset), True
 
         for k in range(i + 1, len(subfolder_names)):
             om = subfolder_data[subfolder_names[k]]
@@ -61,10 +63,10 @@ class FadingLogic:
             om = subfolder_data[subfolder_names[k]]
             if offset in om:
                 return om[offset][0], True
-        return FadingLogic.create_black_dummy_image(offset), True
+        return FadingLogic.create_black_dummy(offset), True
 
     @staticmethod
-    def create_black_dummy_image(offset: float) -> str:
+    def create_black_dummy(offset: float) -> str:
         if not os.path.exists("temp"):
             os.makedirs("temp")
         sign = "+" if offset >= 0 else ""
@@ -79,118 +81,144 @@ class FadingLogic:
         return np.mean(image, axis=1).astype(np.uint8)
 
     @staticmethod
-    def build_fade_core(
+    def build_horizontal_fade(
         active_paths: List[str],
         brightness_list: List[int],
         proxy_list: List[bool],
-        fade_params: FadeParams,
+        fade_params: FadeParams
     ):
-        """
-        Single horizontal fade => (final_image, boundaries, filenames, average_colors).
-        Possibly yields minor dimension mismatch => non-fatal logs.
-        """
-        if len(active_paths) < 2:
-            return None
-        w_total = fade_params.width
-        h_total = fade_params.height
-        influence_val = fade_params.influence
-        damping_val = fade_params.damping
+      """
+      Performs a horizontal fade, with a check for very narrow segments.
+      Any segment below MIN_SEG_DIST pixels wide is simply recolored
+      to match the average of its neighbors.
+      """
 
-        final_img = np.zeros((h_total, w_total, 3), dtype=np.uint8)
-        boundaries = []
-        fnames = []
-        n = len(active_paths)
-        loaded_colors = []
+      if len(active_paths) < 2:
+        return None
 
-        for i, path in enumerate(active_paths):
-            img = cv2.imread(path)
-            if img is None:
-                dummy = np.zeros((10, 10, 3), dtype=np.uint8)
-                ratio = float(h_total) / 10.0
-                new_w = max(1, int(10 * ratio))
-                rz = cv2.resize(dummy, (new_w, h_total))
-                avg = FadingLogic.calculate_horizontal_average(rz)
-            else:
-                ratio = float(h_total) / float(img.shape[0])
-                new_w = max(1, int(img.shape[1] * ratio))
-                rz = cv2.resize(img, (new_w, h_total))
-                avg = FadingLogic.calculate_horizontal_average(rz)
-            loaded_colors.append(avg)
+      w_total = fade_params.width
+      h_total = fade_params.height
+      influence_val = fade_params.influence
+      damping_val = fade_params.damping
 
-        transitions = []
-        original = []
-        for i in range(n - 1):
-            ab = (brightness_list[i] + brightness_list[i + 1]) * 0.5
-            if influence_val == 0:
-                wgt = 1.0
-            else:
-                sb = max(1, ab)
-                wgt = sb**influence_val
-                if wgt < 1e-6:
-                    wgt = 0
-            transitions.append(wgt)
-            original.append(1.0)
+      # final fade image
+      final_img = np.zeros((h_total, w_total, 3), dtype=np.uint8)
+      boundaries = []
+      fnames = []
+      n = len(active_paths)
 
-        sum_w = sum(transitions)
-        if sum_w <= 0:
-            return None
-        sum_o = sum(original)
+      # 1) Load row-average colors
+      loaded_colors = []
+      for i, path in enumerate(active_paths):
+        img = cv2.imread(path)
+        if img is None:
+          # fallback dummy
+          dummy = np.zeros((10,10,3), dtype=np.uint8)
+          ratio = float(h_total)/10.0
+          new_w = max(1,int(10*ratio))
+          rz = cv2.resize(dummy,(new_w,h_total))
+          avg = FadingLogic.calculate_horizontal_average(rz)
+        else:
+          ratio = float(h_total)/ float(img.shape[0])
+          new_w = max(1,int(img.shape[1]* ratio))
+          rz = cv2.resize(img,(new_w,h_total))
+          avg = FadingLogic.calculate_horizontal_average(rz)
+        loaded_colors.append(avg)
 
-        segw_float = []
-        for i in range(n - 1):
-            w_i = transitions[i]
-            frac_inf = w_i / sum_w
-            frac_ori = original[i] / sum_o
-            infl_w = w_total * frac_inf
-            orig_w = w_total * frac_ori
-            diff = infl_w - orig_w
-            max_sh = orig_w * (damping_val / 100.0)
-            if abs(diff) > max_sh:
-                if diff > 0:
-                    infl_w = orig_w + max_sh
-                else:
-                    infl_w = orig_w - max_sh
-            segw_float.append(infl_w)
+      # 2) Compute transition weights
+      transitions = []
+      original = []
+      for i in range(n-1):
+        ab = (brightness_list[i] + brightness_list[i+1]) * 0.5
+        if influence_val == 0:
+          wgt = 1.0
+        else:
+          safe_bright = max(1, ab)
+          wgt = (safe_bright ** influence_val)
+          if wgt < 1e-6:
+            wgt = 0
+        transitions.append(wgt)
+        original.append(1.0)
 
-        seg_int = FadingLogic.distribute_segment_widths(segw_float, w_total)
-        x_start = 0
-        for i in range(n - 1):
-            sw_ = seg_int[i]
-            fname = os.path.basename(active_paths[i])
-            px_ = proxy_list[i]
-            if sw_ <= 0:
-                boundaries.append(x_start)
-                fnames.append((fname, px_))
-                continue
-            leftC = loaded_colors[i]
-            rightC = loaded_colors[i + 1]
-            x_end = x_start + sw_
-            if x_end > w_total:
-                x_end = w_total
-            seg_w = x_end - x_start
-            if seg_w < 1:
-                boundaries.append(x_start)
-                fnames.append((fname, px_))
-                continue
-            xi = np.linspace(0.0, 1.0, seg_w).reshape(1, seg_w, 1)
-            lc = leftC.reshape(h_total, 1, 3)
-            rc = rightC.reshape(h_total, 1, 3)
-            gd = (1.0 - xi) * lc + xi * rc
-            gd = gd.astype(np.uint8)
-            try:
-                final_img[:, x_start: x_start + seg_w] = gd
-            except ValueError as e:
-                print(
-                    f"[DEBUG] dimension mismatch segment i={i}, error={str(e)}")
-            boundaries.append(x_start)
-            fnames.append((fname, px_))
-            x_start += seg_w
+      sum_w = sum(transitions)
+      if sum_w <= 0:
+        return None
+      sum_o = sum(original)
 
-        lastn = os.path.basename(active_paths[-1])
-        lastpx = proxy_list[-1]
-        boundaries.append(w_total - 1)
-        fnames.append((lastn, lastpx))
-        return (final_img, boundaries, fnames, loaded_colors)
+      # 3) Distribute segment widths with damping
+      segw_float = []
+      for i in range(n-1):
+        w_i = transitions[i]
+        frac_inf = w_i / sum_w
+        frac_ori = original[i] / sum_o
+        infl_w = w_total * frac_inf
+        orig_w = w_total * frac_ori
+        diff = infl_w - orig_w
+        max_shift = orig_w * (damping_val / 100.0)
+        if abs(diff) > max_shift:
+          if diff > 0:
+            infl_w = orig_w + max_shift
+          else:
+            infl_w = orig_w - max_shift
+        segw_float.append(infl_w)
+
+      seg_int = FadingLogic.distribute_segment_widths(segw_float, w_total)
+
+      # 4) Build the fade
+      x_start = 0
+      for i in range(n-1):
+        seg_pix = seg_int[i]
+        fname = os.path.basename(active_paths[i])
+        is_proxy = proxy_list[i]
+
+        if seg_pix <= 0:
+          boundaries.append(x_start)
+          fnames.append((fname, is_proxy))
+          continue
+
+        leftC = loaded_colors[i]
+        rightC = loaded_colors[i+1]
+
+        x_end = x_start + seg_pix
+        if x_end > w_total:
+          x_end = w_total
+        seg_w = x_end - x_start
+        if seg_w < 1:
+          boundaries.append(x_start)
+          fnames.append((fname, is_proxy))
+          continue
+
+        # construct gradient
+        xi = np.linspace(0.0, 1.0, seg_w, dtype=np.float32).reshape(1, seg_w, 1)
+        leftC_resh = leftC.reshape(h_total, 1, 3)
+        rightC_resh = rightC.reshape(h_total, 1, 3)
+        grad = (1.0 - xi)* leftC_resh + xi* rightC_resh
+        grad = grad.astype(np.uint8)
+
+        # If segment < MIN_SEG_DIST, recolor it to neighbors' average
+        if seg_w < MIN_SEG_DIST:
+          # simply set grad to the average of leftC and rightC
+          avg_neighbor = 0.5 * leftC_resh + 0.5 * rightC_resh
+          avg_neighbor = avg_neighbor.astype(np.uint8)
+          grad = np.repeat(avg_neighbor, seg_w, axis=1)
+
+        # place into final_img
+        try:
+          final_img[:, x_start : x_start + seg_w] = grad
+        except ValueError as e:
+          print("[DEBUG] dimension mismatch:", e)
+
+        boundaries.append(x_start)
+        fnames.append((fname, is_proxy))
+        x_start = x_end
+
+      # add last boundary
+      lastn = os.path.basename(active_paths[-1])
+      lastpx = proxy_list[-1]
+      boundaries.append(w_total - 1)
+      fnames.append((lastn, lastpx))
+
+      return (final_img, boundaries, fnames, loaded_colors)
 
     @staticmethod
     def distribute_segment_widths(w_list: List[float], width_total: int) -> List[int]:
@@ -230,7 +258,7 @@ class FadingLogic:
         return w_int
 
     @staticmethod
-    def build_global_subfolder_spline(
+    def build_cubicspline_subfolders(
         subfolder_names: List[str], subfolder_fade_info: dict, steps: int
     ):
         """
@@ -282,82 +310,93 @@ class FadingLogic:
         )
 
     @staticmethod
-    def build_one_frame_global(
+    def build_spline_frame(
         frame_idx: int,
         t_global: float,
         keyframe_times: np.ndarray,
         boundary_splines_data: List[List[float]],
         color_splines_data: List[List[np.ndarray]],
         w: int,
-        h: int,
+        h: int
     ):
-        """
-        Worker function for building a single frame from global spline.
-        Logs dimension mismatch with [DEBUG], but keeps going.
-        """
         from scipy.interpolate import CubicSpline
 
         n_boundaries = len(boundary_splines_data)
         global_boundaries = []
-        for j in range(n_boundaries):
-            arr_j = boundary_splines_data[j]
-            spl_j = CubicSpline(keyframe_times, arr_j)
-            val = float(spl_j(t_global))
-            global_boundaries.append(int(round(val)))
 
+        # 1) Evaluate x-positions (boundaries)
+        for j in range(n_boundaries):
+          arr_j = boundary_splines_data[j]
+          spl_j = CubicSpline(keyframe_times, arr_j)
+          x_val = float(spl_j(t_global))
+          global_boundaries.append(int(round(x_val)))
+
+        # 2) Evaluate color row-average
+        # We'll do linear interpolation between the two keyframes
         m = len(keyframe_times)
-        pos = t_global * (m - 1)
+        pos = t_global*(m-1)
         i2 = int(np.floor(pos))
         local_t = pos - i2
-        if i2 >= m - 1:
-            i2 = m - 2
-            local_t = 1.0
+        if i2 >= m-1:
+          i2 = m-2
+          local_t = 1.0
 
         global_avg_colors = []
         for j in range(n_boundaries):
-            c_list = color_splines_data[j]
-            cA = c_list[i2]
-            cB = c_list[i2 + 1]
-            c_mix = np.clip((1.0 - local_t) * cA + local_t * cB, 0, 255).astype(
-                np.uint8
-            )
-            global_avg_colors.append(c_mix)
+          c_list = color_splines_data[j]
+          cA = c_list[i2]
+          cB = c_list[i2+1]
+          c_mix = np.clip((1.0 - local_t)*cA + local_t*cB,0,255).astype(np.uint8)
+          global_avg_colors.append(c_mix)
 
-        if n_boundaries > 0:
-            if global_boundaries[0] != 0:
-                global_boundaries.insert(0, 0)
-                global_avg_colors.insert(0, global_avg_colors[0])
-            if global_boundaries[-1] != w:
-                global_boundaries.append(w)
-                global_avg_colors.append(global_avg_colors[-1])
-            for ix in range(1, len(global_boundaries)):
-                if global_boundaries[ix] <= global_boundaries[ix - 1]:
-                    global_boundaries[ix] = global_boundaries[ix - 1] + 1
-                    if global_boundaries[ix] > w:
-                        global_boundaries[ix] = w
+        # 3) Enforce strictly increasing boundaries
+        if n_boundaries>0:
+          if global_boundaries[0] != 0:
+            global_boundaries.insert(0,0)
+            global_avg_colors.insert(0, global_avg_colors[0])
+          if global_boundaries[-1] != w:
+            global_boundaries.append(w)
+            global_avg_colors.append(global_avg_colors[-1])
+          for ix in range(1,len(global_boundaries)):
+            if global_boundaries[ix] <= global_boundaries[ix-1]:
+              global_boundaries[ix] = global_boundaries[ix-1] + 1
+              if global_boundaries[ix]> w:
+                global_boundaries[ix] = w
 
-        frame = np.zeros((h, w, 3), dtype=np.uint8)
-        if len(global_boundaries) > 1:
-            for j in range(len(global_boundaries) - 1):
-                x0 = global_boundaries[j]
-                x1 = global_boundaries[j + 1]
-                seg_w = x1 - x0
-                if seg_w < 1:
-                    seg_w = 1
-                    x1 = min(x0 + 1, w)
-                leftC = global_avg_colors[j].reshape(h, 1, 3)
-                rightC = global_avg_colors[j + 1].reshape(h, 1, 3)
-                xi = np.linspace(0.0, 1.0, seg_w).reshape(1, seg_w, 1)
-                gd = (1.0 - xi) * leftC + xi * rightC
-                gd = gd.astype(np.uint8)
-                try:
-                    frame[:, x0:x1] = gd
-                except ValueError as e:
-                    print(f"[DEBUG] Worker error frame {frame_idx}: {e}")
+        # 4) Build the frame using these boundaries + average colors
+        frame = np.zeros((h,w,3), dtype=np.uint8)
+
+        for j in range(len(global_boundaries)-1):
+          x0 = global_boundaries[j]
+          x1 = global_boundaries[j+1]
+          seg_w = x1 - x0
+          if seg_w < 1:
+            seg_w=1
+            x1= x0+1
+
+          leftC = global_avg_colors[j].reshape(h,1,3)
+          rightC= global_avg_colors[j+1].reshape(h,1,3)
+          xi= np.linspace(0.0,1.0, seg_w).reshape(1,seg_w,1)
+          grad= (1.0 - xi)*leftC + xi*rightC
+          grad= grad.astype(np.uint8)
+
+          # if seg_w < MIN_SEG_DIST => recolor entire gradient with average of leftC & rightC
+          if seg_w < MIN_SEG_DIST:
+            # debug-print
+            # print(f"[DEBUG] Frame {frame_idx}, segment j={j}, seg_w={seg_w} => recolor (Variant B).")
+            avgC= 0.5*leftC + 0.5*rightC
+            avgC= avgC.astype(np.uint8)
+            grad= np.repeat(avgC, seg_w, axis=1)
+
+          try:
+            frame[:, x0:x1] = grad
+          except ValueError as e:
+            print("[DEBUG] dimension mismatch in build_spline_frame:", e)
+
         return (frame_idx, frame, None)
 
     @staticmethod
-    def crossfade_subfolders_onto_writer(
+    def export_crossfade_video(
         keyframe_times: np.ndarray,
         boundary_splines_data: List[List[float]],
         color_splines_data: List[List[np.ndarray]],
@@ -421,7 +460,7 @@ class FadingLogic:
                 fut_map = {}
                 for fid, tg in subset:
                     fut = executor.submit(
-                        FadingLogic.build_one_frame_global,
+                        FadingLogic.build_spline_frame,
                         fid,
                         tg,
                         keyframe_times,
