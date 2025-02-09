@@ -56,22 +56,22 @@ class FadingUI:
             "result": None,
         }
 
-        self._build_ui()
+        self._setup_ui()
 
-    def _build_ui(self):
+    def _setup_ui(self):
         # First row
         self.top_frame_1 = tk.Frame(self.root, bg=BG_COLOR)
         self.top_frame_1.pack(side="top", fill="x", pady=5)
 
         self.btn_files = tk.Button(
-            self.top_frame_1, text="Files", command=self.on_select_images, bg=BG_COLOR
+            self.top_frame_1, text="Files", command=self.select_images, bg=BG_COLOR
         )
         self.btn_files.pack(side="left", padx=5)
 
         self.btn_single_dir = tk.Button(
             self.top_frame_1,
             text="Directory",
-            command=self.on_select_directory,
+            command=self.select_directory,
             bg=BG_COLOR,
         )
         self.btn_single_dir.pack(side="left", padx=5)
@@ -79,7 +79,7 @@ class FadingUI:
         self.btn_subfolders = tk.Button(
             self.top_frame_1,
             text="Dir Subfolders",
-            command=self.on_select_subfolders,
+            command=self.select_subfolders,
             bg=BG_COLOR,
         )
         self.btn_subfolders.pack(side="left", padx=5)
@@ -87,7 +87,7 @@ class FadingUI:
         self.prev_btn = tk.Button(
             self.top_frame_1,
             text="<<",
-            command=self.on_prev_subfolder,
+            command=self.prev_subfolder,
             bg=BG_COLOR,
             state="disabled",
         )
@@ -96,26 +96,26 @@ class FadingUI:
         self.subfolder_combo = ttk.Combobox(self.top_frame_1, state="disabled")
         self.subfolder_combo.pack(side="left", padx=5)
         self.subfolder_combo.bind(
-            "<<ComboboxSelected>>", self.on_subfolder_changed)
+            "<<ComboboxSelected>>", self.subfolder_changed)
 
         self.next_btn = tk.Button(
             self.top_frame_1,
             text=">>",
-            command=self.on_next_subfolder,
+            command=self.next_subfolder,
             bg=BG_COLOR,
             state="disabled",
         )
         self.next_btn.pack(side="left", padx=5)
 
         self.calc_btn = tk.Button(
-            self.top_frame_1, text="Calculate", command=self.on_calculate, bg=BG_COLOR
+            self.top_frame_1, text="Calculate", command=self.calculate_fade, bg=BG_COLOR
         )
         self.calc_btn.pack(side="left", padx=5)
 
         self.export_current_btn = tk.Button(
             self.top_frame_1,
             text="Export Current",
-            command=self.on_export_current,
+            command=self.export_current_image,
             bg=BG_COLOR,
         )
         self.export_current_btn.pack(side="left", padx=5)
@@ -123,7 +123,7 @@ class FadingUI:
         self.export_video_btn = tk.Button(
             self.top_frame_1,
             text="Export Video",
-            command=self.on_export_video,
+            command=self.export_video,
             bg=BG_COLOR,
         )
         self.export_video_btn.pack(side="left", padx=5)
@@ -131,7 +131,7 @@ class FadingUI:
         self.ffmpeg_btn = tk.Button(
             self.top_frame_1,
             text="FFMPEG",
-            command=self.on_select_ffmpeg_path,
+            command=self.set_ffmpeg_executable,
             bg=BG_COLOR,
         )
         self.ffmpeg_btn.pack(side="left", padx=5)
@@ -168,12 +168,12 @@ class FadingUI:
         self.brightness_slider.pack(side="left", padx=5)
 
         self.filter_btn = tk.Button(
-            self.top_frame_2, text="Filter", command=self.on_filter, bg=BG_COLOR
+            self.top_frame_2, text="Filter", command=self.filter_brightness, bg=BG_COLOR
         )
         self.filter_btn.pack(side="left", padx=5)
 
         self.reset_btn = tk.Button(
-            self.top_frame_2, text="Reset", command=self.on_reset, bg=BG_COLOR
+            self.top_frame_2, text="Reset", command=self.reset_filter_brightness, bg=BG_COLOR
         )
         self.reset_btn.pack(side="left", padx=5)
 
@@ -220,12 +220,12 @@ class FadingUI:
 
         self.display_canvas = tk.Canvas(self.root, bg=BG_COLOR)
         self.display_canvas.pack(side="top", fill="both", expand=True)
-        self.display_canvas.bind("<Configure>", self.on_canvas_resized)
+        self.display_canvas.bind("<Configure>", self.canvas_resized)
 
     def on_quit(self):
         self.root.destroy()
 
-    def on_select_ffmpeg_path(self):
+    def set_ffmpeg_executable(self):
         """Pick ffmpeg.exe, store in self.ffmpeg_path."""
         path = filedialog.askopenfilename(
             title="Select ffmpeg.exe", filetypes=[("exe", "*.exe"), ("All", "*.*")]
@@ -234,27 +234,27 @@ class FadingUI:
             self.ffmpeg_path = path
 
     # ------------- Subfolder Nav -----------
-    def on_prev_subfolder(self):
+    def prev_subfolder(self):
         idx = self.subfolder_combo_idx - 1
         if idx < 0:
             self.prev_btn.config(state="disabled")
             return
         self.subfolder_combo.current(idx)
-        self._create_subfolder_image_cards(idx, auto_calc=True)
+        self._create_subfolder_cards(idx, auto_calc=True)
 
-    def on_next_subfolder(self):
+    def next_subfolder(self):
         idx = self.subfolder_combo_idx + 1
         if idx >= len(self.subfolder_names):
             self.next_btn.config(state="disabled")
             return
         self.subfolder_combo.current(idx)
-        self._create_subfolder_image_cards(idx, auto_calc=True)
+        self._create_subfolder_cards(idx, auto_calc=True)
 
-    def on_subfolder_changed(self, evt=None):
+    def subfolder_changed(self, evt=None):
         val = self.subfolder_combo.get()
         if val in self.subfolder_names:
             idx = self.subfolder_names.index(val)
-            self._create_subfolder_image_cards(idx, auto_calc=True)
+            self._create_subfolder_cards(idx, auto_calc=True)
 
     def set_mode(self, mode):
         self.current_mode = mode
@@ -289,7 +289,7 @@ class FadingUI:
             self.status_label.config(text=f"{c} images loaded.")
 
     # -------------- FILE / DIR --------------
-    def on_select_images(self):
+    def select_images(self):
         files = filedialog.askopenfilenames(
             title="Select Images",
             filetypes=[
@@ -301,9 +301,9 @@ class FadingUI:
         sorted_paths = sorted(files, key=fading.FadingLogic.parse_utc_offset)
         self._create_image_cards(sorted_paths)
         self.update_navigation()
-        self.on_calculate()
+        self.calculate_fade()
 
-    def on_select_directory(self):
+    def select_directory(self):
         folder = filedialog.askdirectory(title="Select Directory")
         if not folder:
             return
@@ -315,9 +315,9 @@ class FadingUI:
         found = sorted(found, key=fading.FadingLogic.parse_utc_offset)
         self._create_image_cards(found)
         self.update_navigation()
-        self.on_calculate()
+        self.calculate_fade()
 
-    def on_select_subfolders(self):
+    def select_subfolders(self):
         folder = filedialog.askdirectory(
             title="Select Directory (with Subfolders)")
         if not folder:
@@ -371,12 +371,12 @@ class FadingUI:
 
         self.subfolder_combo["values"] = self.subfolder_names
         self.subfolder_combo.current(0)
-        self._create_subfolder_image_cards(0, auto_calc=False)
+        self._create_subfolder_cards(0, auto_calc=False)
         self.update_navigation()
-        self.on_calculate()
+        self.calculate_fade()
 
     # -------------- CREATE CHECKBOX --------------
-    def _create_subfolder_image_cards(self, idx, auto_calc=True):
+    def _create_subfolder_cards(self, idx, auto_calc=True):
         for w in self.checkbox_frame.winfo_children():
             w.destroy()
         self.image_data.clear()
@@ -391,7 +391,7 @@ class FadingUI:
         if not fi:
             return
 
-        gamma_val = self._get_gamma_value()
+        gamma_val = self._get_gamma()
         self.checkbox_frame.columnconfigure(tuple(range(len(fi))), weight=1)
 
         for col_idx, (fp, px, offv) in enumerate(fi):
@@ -425,9 +425,9 @@ class FadingUI:
             )
         if auto_calc:
             if self.brightness_slider.get() > 0:
-                self.on_filter()
+                self.filter_brightness()
             else:
-                self.on_calculate()
+                self.calculate_fade()
         self.update_navigation()
 
     def _create_image_cards(self, filepaths: List[str]):
@@ -437,7 +437,7 @@ class FadingUI:
 
         if not filepaths:
             return
-        gamma_val = self._get_gamma_value()
+        gamma_val = self._get_gamma()
         self.checkbox_frame.columnconfigure(
             tuple(range(len(filepaths))), weight=1)
 
@@ -472,7 +472,7 @@ class FadingUI:
                 )
             )
 
-    def _get_gamma_value(self):
+    def _get_gamma(self):
         try:
             val = float(self.gamma_entry.get())
             if val <= 0:
@@ -482,10 +482,10 @@ class FadingUI:
             return 2.0
 
     # ------------- Calculation / Filter / Reset -------------
-    def on_calculate(self):
+    def calculate_fade(self):
         start_t = time.time()
         self._recalc_brightness()
-        self._perform_fade_calculation()
+        self._run_fade_calculation()
         el = time.time() - start_t
         # convert to min s style
         mins = int(el // 60)
@@ -497,20 +497,20 @@ class FadingUI:
             self.status_label.config(text=f"Calculation done in {secs}s.")
 
     def _recalc_brightness(self):
-        gv = self._get_gamma_value()
+        gv = self._get_gamma()
         for d in self.image_data:
             d.brightness_value = fading.ImageHelper.calculate_brightness(
                 d.file_path, gv
             )
 
-    def on_filter(self):
+    def filter_brightness(self):
         start_t = time.time()
         thr = self.brightness_slider.get()
-        self._reset_checkboxes()
+        self._select_all_checkboxes()
         for d in self.image_data:
             if d.brightness_value < thr:
                 d.check_var.set(False)
-        self._perform_fade_calculation()
+        self._run_fade_calculation()
         el = time.time() - start_t
         mins = int(el // 60)
         secs = int(el % 60)
@@ -520,17 +520,17 @@ class FadingUI:
         else:
             self.status_label.config(text=f"Filtered < {thr} in {secs}s.")
 
-    def on_reset(self):
+    def reset_filter_brightness(self):
         self.brightness_slider.set(0)
-        self._reset_checkboxes()
-        self.on_calculate()
+        self._select_all_checkboxes()
+        self.calculate_fade()
         self.status_label.config(text="Filter reset, fade recalculated.")
 
-    def _reset_checkboxes(self):
+    def _select_all_checkboxes(self):
         for d in self.image_data:
             d.check_var.set(True)
 
-    def _perform_fade_calculation(self):
+    def _run_fade_calculation(self):
         active_paths = []
         br_list = []
         px_list = []
@@ -544,7 +544,7 @@ class FadingUI:
             self.final_image = None
             self.boundary_positions = []
             self.filenames_at_boundaries = []
-            self._redraw_canvas()
+            self._draw_canvas()
             self.status_label.config(text="Not enough checked images.")
             return
 
@@ -579,18 +579,18 @@ class FadingUI:
                 self.filenames_at_boundaries,
                 avgc,
             ) = c["result"]
-            self._redraw_canvas()
+            self._draw_canvas()
             return
 
         fpar = FadeParams(width=w_, height=h_, gamma=gam,
                           influence=inf, damping=dam)
-        res = fading.FadingLogic.build_fade_core(
+        res = fading.FadingLogic.build_horizontal_fade(
             active_paths, br_list, px_list, fpar)
         if not res:
             self.final_image = None
             self.boundary_positions = []
             self.filenames_at_boundaries = []
-            self._redraw_canvas()
+            self._draw_canvas()
             return
         (
             self.final_image,
@@ -627,10 +627,10 @@ class FadingUI:
             self.filenames_at_boundaries,
             avgcols,
         )
-        self._redraw_canvas()
+        self._draw_canvas()
 
     # ------------- Export Current -------------
-    def on_export_current(self):
+    def export_current_image(self):
         if self.final_image is None:
             self.status_label.config(text="No fade to export.")
             return
@@ -646,10 +646,10 @@ class FadingUI:
         cv2.imwrite(png_name, self.final_image)
         self.status_label.config(text=f"Exported current => {png_name}")
 
-    # ------------- Export Video => global frames -------------
-    def on_export_video(self):
+    # ------------- Export Video -------------
+    def export_video(self):
         """
-        Steps, FPS, frames/batch, worker => crossfade_subfolders_onto_writer
+        Steps, FPS, frames/batch, worker => export_crossfade_video
         => partial mp4 in "output/chunk", final in "output".
         Added 'Delete Chunks' checkbox + logs for chunk progress & total time.
         """
@@ -724,13 +724,13 @@ class FadingUI:
                 return
 
             # 1) build single fade for each subfolder => subfolder_fade_info
-            if not self._build_subfolder_fadeinfo():
+            if not self._build_subfolder_fades():
                 messagebox.showerror(
                     "Error", "Could not build fade for subfolders.")
                 return
 
             # 2) build global spline => ...
-            ret_spline = fading.FadingLogic.build_global_subfolder_spline(
+            ret_spline = fading.FadingLogic.build_cubicspline_subfolders(
                 self.subfolder_names, self.subfolder_fade_info, steps_val
             )
             if not ret_spline:
@@ -752,7 +752,7 @@ class FadingUI:
             ftag = f"{now_str}_fading_g{igam}i{iinf}d{idev}"
 
             # 3) partial frames => chunk => final merge
-            fading.FadingLogic.crossfade_subfolders_onto_writer(
+            fading.FadingLogic.export_crossfade_video(
                 keyframe_times=keyframe_times,
                 boundary_splines_data=b_splines,
                 color_splines_data=c_splines,
@@ -782,13 +782,13 @@ class FadingUI:
         ok_btn = tk.Button(diag, text="OK", command=on_ok, bg=BG_COLOR)
         ok_btn.pack(side="top", padx=5, pady=5)
 
-    def _build_subfolder_fadeinfo(self):
+    def _build_subfolder_fades(self):
         """
-        For each subfolder in subfolder_names, build a single fade (via build_fade_core).
+        For each subfolder in subfolder_names, build a single fade (via build_horizontal_fade).
         """
         if len(self.subfolder_names) < 2:
             return False
-        w_, h_ = self._get_dims()
+        w_, h_ = self._get_dimensions()
         gam_ = float(self.gamma_entry.get())
         inf_ = float(self.influence_slider.get())
         dam_ = float(self.damping_slider.get())
@@ -801,7 +801,7 @@ class FadingUI:
             fi.sort(key=lambda x: x[2])
 
             self.image_data.clear()
-            g_ = self._get_gamma_value()
+            g_ = self._get_gamma()
             for fp, px, offv in fi:
                 var = tk.BooleanVar(value=True)
                 br = fading.ImageHelper.calculate_brightness(fp, g_)
@@ -828,7 +828,8 @@ class FadingUI:
             fpar = FadeParams(
                 width=w_, height=h_, gamma=gam_, influence=inf_, damping=dam_
             )
-            r = fading.FadingLogic.build_fade_core(active_p, br_l, px_l, fpar)
+            r = fading.FadingLogic.build_horizontal_fade(
+                active_p, br_l, px_l, fpar)
             if not r:
                 return False
             (fimg, bpos, fnames, avgcols) = r
@@ -841,7 +842,7 @@ class FadingUI:
             )
         return True
 
-    def _get_dims(self):
+    def _get_dimensions(self):
         try:
             w_ = int(self.width_entry.get())
             h_ = int(self.height_entry.get())
@@ -851,10 +852,10 @@ class FadingUI:
         except ValueError:
             return (3840, 720)
 
-    def on_canvas_resized(self, evt=None):
-        self._redraw_canvas()
+    def canvas_resized(self, evt=None):
+        self._draw_canvas()
 
-    def _redraw_canvas(self):
+    def _draw_canvas(self):
         if self.final_image is None:
             self.display_canvas.delete("all")
             return
