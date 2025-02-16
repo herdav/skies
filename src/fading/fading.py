@@ -9,7 +9,7 @@ import subprocess
 from datetime import datetime
 import time
 
-MIN_SEG_DIST = 4  # if resolution is 5760x1080px
+MIN_SEG_DIST = 6  # 6 if resolution is 5760x1080px
 
 
 class ImageHelper:
@@ -428,7 +428,7 @@ class FadingLogic:
     ):
         """
         Renders frames => partial .mp4 in 'output/chunk' => merges => final in 'output'.
-        Also applies a 'ghosting' effect with 'ghost_count' frames of recursion (variant B),
+        Also applies a 'ghosting' effect with 'ghost_count' frames of recursion,
         meaning each new frame is averaged with its previously ghosted frames.
 
         Args:
@@ -446,7 +446,7 @@ class FadingLogic:
             progress_bar: A tkinter Progressbar to update UI progress.
             diag: The tk.Toplevel window for refreshing UI.
             delete_chunks: If True, intermediate chunk files will be deleted after merging.
-            ghost_count: Number of frames to blend in a rolling ghosting manner (variant B).
+            ghost_count: Number of frames to blend in a rolling ghosting manner.
                         Must be >= 1. For example, 5 means each new frame is
                         ( raw_frame + 4 previous ghosted frames ) / 5.
         """
@@ -531,7 +531,7 @@ class FadingLogic:
                         diag.update_idletasks()
 
             # Now we must write frames in ascending order to the chunk,
-            # applying the ghosting effect (variant B).
+            # applying the ghosting effect.
             for fid in range(start_i, end_i):
                 raw_frame = result_frames.get(fid, None)
                 if raw_frame is None:
@@ -545,13 +545,13 @@ class FadingLogic:
                     acc += gfr.astype(np.float32)
 
                 # Determine the actual divisor:
-                # variant B always sums (raw_frame + all ghosted frames).
+                # always sums (raw_frame + all ghosted frames).
                 # We want in total ghost_count frames if ghost_buffer already has (ghost_count-1).
                 divisor = 1 + len(ghost_buffer)
                 # But we want to ensure it doesn't exceed 'ghost_count'
                 # If len(ghost_buffer) >= ghost_count-1, we do a full average over ghost_count.
                 # If ghost_buffer is smaller at the chunk start, we do partial.
-                # In "pure" variant B, we typically clamp to ghost_count if divisor > ghost_count,
+                # We typically clamp to ghost_count if divisor > ghost_count,
                 # but if ghost_buffer is long, we pop from it. Let's see:
                 if divisor > ghost_count:
                     # This can occur if ghost_buffer is bigger than ghost_count-1 for some reason
