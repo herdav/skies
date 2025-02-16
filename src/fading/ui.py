@@ -8,6 +8,7 @@ from typing import List
 from datamodel import ImageData, SubfolderFadeData, FadeParams
 import fading
 from datetime import datetime
+import multiprocessing
 
 BG_COLOR = "#dcdcdc"
 TEXT_BG_COLOR = (220, 220, 220, 255)
@@ -17,6 +18,11 @@ MODE_NONE = 0
 MODE_FILES = 1
 MODE_SINGLE_DIR = 2
 MODE_SUBFOLDERS = 3
+
+DEFAULT_GAMMA = 2
+DEFAULT_DAMPING = 100
+DEFAULT_INFLUENCE = 4.0
+DEFAULT_CROSSFADES = 100
 
 
 class FadingUI:
@@ -130,7 +136,7 @@ class FadingUI:
 
         self.ffmpeg_btn = tk.Button(
             self.top_frame_1,
-            text="FFMPEG",
+            text="Path to FFmpeg",
             command=self.set_ffmpeg_executable,
             bg=BG_COLOR,
         )
@@ -180,7 +186,7 @@ class FadingUI:
         tk.Label(self.top_frame_2, text="Gamma:",
                  bg=BG_COLOR).pack(side="left", padx=5)
         self.gamma_entry = tk.Entry(self.top_frame_2, width=4)
-        self.gamma_entry.insert(0, "2")
+        self.gamma_entry.insert(0, str(DEFAULT_GAMMA))
         self.gamma_entry.pack(side="left", padx=5)
 
         tk.Label(self.top_frame_2, text="Influence:", bg=BG_COLOR).pack(
@@ -194,22 +200,14 @@ class FadingUI:
             orient="horizontal",
             bg=BG_COLOR,
         )
-        self.influence_slider.set(0)
+        self.influence_slider.set(DEFAULT_INFLUENCE)
         self.influence_slider.pack(side="left", padx=5)
 
-        tk.Label(self.top_frame_2, text="Deviation(%):", bg=BG_COLOR).pack(
-            side="left", padx=5
-        )
-        self.damping_slider = tk.Scale(
-            self.top_frame_2,
-            from_=0,
-            to=100,
-            resolution=1,
-            orient="horizontal",
-            bg=BG_COLOR,
-        )
-        self.damping_slider.set(20)
-        self.damping_slider.pack(side="left", padx=5)
+        tk.Label(self.top_frame_2, text="Damping:",
+                 bg=BG_COLOR).pack(side="left", padx=5)
+        self.damping_entry = tk.Entry(self.top_frame_2, width=6)
+        self.damping_entry.insert(0, str(DEFAULT_DAMPING))
+        self.damping_entry.pack(side="left", padx=5)
 
         self.status_label = tk.Label(
             self.root, text="", fg="blue", bg=BG_COLOR)
@@ -559,7 +557,7 @@ class FadingUI:
 
         gam = float(self.gamma_entry.get())
         inf = float(self.influence_slider.get())
-        dam = float(self.damping_slider.get())
+        dam = float(self.damping_entry.get())
 
         c = self._last_fade_cache
         same_input = (
@@ -640,7 +638,7 @@ class FadingUI:
         now_s = datetime.now().strftime("%Y%m%d_%H%M%S")
         gam_ = self.gamma_entry.get()
         inf_ = self.influence_slider.get()
-        dam_ = self.damping_slider.get()
+        dam_ = self.damping_entry.get()
         ftag = f"{now_s}_fading_g{gam_}i{inf_}d{dam_}"
         png_name = os.path.join(out_folder, f"{ftag}_current.png")
         cv2.imwrite(png_name, self.final_image)
@@ -649,10 +647,11 @@ class FadingUI:
     # ------------- Export Video -------------
     def export_video(self):
         """
-        Steps, FPS, frames/batch, worker => export_crossfade_video
-        => partial mp4 in "output/chunk", final in "output".
-        Added 'Delete Chunks' checkbox + logs for chunk progress & total time.
+        Opens a dialog to configure crossfade-video export.
+        It prompts for number of crossfades, FPS, frames per batch, workers, 
+        delete-chunks option, and now also 'Ghost Frames'.
         """
+
         if self.current_mode != MODE_SUBFOLDERS or len(self.subfolder_names) < 2:
             self.status_label.config(
                 text="Need multiple subfolders for global approach."
@@ -663,38 +662,55 @@ class FadingUI:
         diag.title("Export")
         diag.configure(bg=BG_COLOR)
 
-        tk.Label(diag, text="Number of Crossfades (Steps):", bg=BG_COLOR).pack(
+        # --- Steps (Crossfades) ---
+        tk.Label(diag, text="Number of Crossfades:", bg=BG_COLOR).pack(
             side="top", padx=5, pady=5
         )
-        steps_var = tk.StringVar(value="10")
+        steps_var = tk.StringVar(value=str(DEFAULT_CROSSFADES))
         steps_entry = tk.Entry(diag, textvariable=steps_var)
         steps_entry.pack(side="top", padx=5, pady=5)
 
+        # --- FPS ---
         tk.Label(diag, text="Video FPS:", bg=BG_COLOR).pack(
-            side="top", padx=5, pady=5)
+            side="top", padx=5, pady=5
+        )
         fps_var = tk.StringVar(value="25")
         fps_entry = tk.Entry(diag, textvariable=fps_var)
         fps_entry.pack(side="top", padx=5, pady=5)
 
+        # --- Frames per Batch ---
         tk.Label(diag, text="Frames per Batch:", bg=BG_COLOR).pack(
             side="top", padx=5, pady=5
         )
-        batch_var = tk.StringVar(value="500")
+        batch_var = tk.StringVar(value="1000")
         batch_entry = tk.Entry(diag, textvariable=batch_var)
         batch_entry.pack(side="top", padx=5, pady=5)
 
-        tk.Label(diag, text="Worker Count:", bg=BG_COLOR).pack(
+        # --- Ghost Frames ---
+        tk.Label(diag, text="Ghost Frames:", bg=BG_COLOR).pack(
             side="top", padx=5, pady=5
         )
-        worker_var = tk.StringVar(value="4")
-        worker_entry = tk.Entry(diag, textvariable=worker_var)
-        worker_entry.pack(side="top", padx=5, pady=5)
+        ghost_var = tk.StringVar(value="3")
+        ghost_entry = tk.Entry(diag, textvariable=ghost_var)
+        ghost_entry.pack(side="top", padx=5, pady=5)
 
-        delete_var = tk.BooleanVar(value=True)
-        delete_chk = tk.Checkbutton(
-            diag, text="Delete chunks after merge?", variable=delete_var, bg=BG_COLOR
+        # --- Workers ---
+        tk.Label(diag, text="Workers:", bg=BG_COLOR).pack(
+            side="top", padx=5, pady=5
         )
-        delete_chk.pack(side="top", padx=5, pady=5)
+        max_cpu = multiprocessing.cpu_count()
+        worker_slider = tk.Scale(
+            diag,
+            from_=1,
+            to=max_cpu,
+            orient="horizontal",
+            resolution=1,
+            bg=BG_COLOR
+        )
+        # Set a default (for example 8) if 8 <= max_cpu, otherwise max_cpu
+        default_workers = 8 if 8 <= max_cpu else max_cpu
+        worker_slider.set(default_workers)
+        worker_slider.pack(side="top", padx=5, pady=5)
 
         prog_frame = tk.Frame(diag, bg=BG_COLOR)
         prog_frame.pack(side="top", fill="x", padx=10, pady=10)
@@ -702,7 +718,15 @@ class FadingUI:
             side="top", padx=5, pady=2
         )
         progress_bar = ttk.Progressbar(
-            prog_frame, length=300, mode="determinate")
+            prog_frame, length=300, mode="determinate"
+        )
+
+        delete_var = tk.BooleanVar(value=True)
+        delete_chk = tk.Checkbutton(
+            diag, text="Delete chunks after merge?", variable=delete_var, bg=BG_COLOR
+        )
+        delete_chk.pack(side="top", padx=5, pady=5)
+
         progress_bar.pack(side="top", padx=10, pady=2)
 
         def on_ok():
@@ -711,12 +735,14 @@ class FadingUI:
                 steps_val = int(steps_var.get())
                 fps_val = int(fps_var.get())
                 frames_val = int(batch_var.get())
-                workers_val = int(worker_var.get())
-                if steps_val < 1 or fps_val < 1 or frames_val < 1 or workers_val < 1:
+                workers_val = int(worker_slider.get())
+                ghost_val = int(ghost_var.get())
+                if steps_val < 1 or fps_val < 1 or frames_val < 1 or workers_val < 1 or ghost_val < 1:
                     raise ValueError
             except ValueError:
                 messagebox.showerror(
-                    "Error", "Invalid steps/fps/frames-batch/worker.")
+                    "Error", "Invalid steps/fps/frames-batch/worker/ghost-frame number."
+                )
                 return
 
             if not os.path.isfile(self.ffmpeg_path):
@@ -726,20 +752,22 @@ class FadingUI:
             # 1) build single fade for each subfolder => subfolder_fade_info
             if not self._build_subfolder_fades():
                 messagebox.showerror(
-                    "Error", "Could not build fade for subfolders.")
+                    "Error", "Could not build fade for subfolders."
+                )
                 return
 
-            # 2) build global spline => ...
+            # 2) build global spline
             ret_spline = fading.FadingLogic.build_cubicspline_subfolders(
                 self.subfolder_names, self.subfolder_fade_info, steps_val
             )
             if not ret_spline:
                 messagebox.showerror(
-                    "Error", "Global spline build returned None.")
+                    "Error", "Global spline build returned None."
+                )
                 return
             (keyframe_times, b_splines, c_splines,
              w_, h_, total_frames) = ret_spline
-            print(f"[DEBUG] Global Spline => total_frames={total_frames}")
+            print(f"[INFO] Global Spline => total_frames={total_frames}")
 
             out_folder = "output"
             if not os.path.exists(out_folder):
@@ -748,7 +776,7 @@ class FadingUI:
             now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
             igam = self.gamma_entry.get()
             iinf = self.influence_slider.get()
-            idev = self.damping_slider.get()
+            idev = self.damping_entry.get()
             ftag = f"{now_str}_fading_g{igam}i{iinf}d{idev}"
 
             # 3) partial frames => chunk => final merge
@@ -768,6 +796,7 @@ class FadingUI:
                 progress_bar=progress_bar,
                 diag=diag,
                 delete_chunks=delete_var.get(),
+                ghost_count=ghost_val
             )
             diag.destroy()
             elap = time.time() - start_export
@@ -775,7 +804,8 @@ class FadingUI:
             secs = int(elap % 60)
             if mins > 0:
                 self.status_label.config(
-                    text=f"Export done in {mins}min {secs}s.")
+                    text=f"Export done in {mins}min {secs}s."
+                )
             else:
                 self.status_label.config(text=f"Export done in {secs}s.")
 
@@ -791,7 +821,7 @@ class FadingUI:
         w_, h_ = self._get_dimensions()
         gam_ = float(self.gamma_entry.get())
         inf_ = float(self.influence_slider.get())
-        dam_ = float(self.damping_slider.get())
+        dam_ = float(self.damping_entry.get())
 
         for sf in self.subfolder_names:
             off_map = self.subfolder_data[sf]
