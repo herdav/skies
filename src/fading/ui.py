@@ -671,7 +671,7 @@ class FadingUI:
         steps_entry.pack(side="top", padx=5, pady=5)
 
         # --- FPS ---
-        tk.Label(diag, text="Video FPS:", bg=BG_COLOR).pack(
+        tk.Label(diag, text="Frames per Second:", bg=BG_COLOR).pack(
             side="top", padx=5, pady=5
         )
         fps_var = tk.StringVar(value="25")
@@ -679,7 +679,7 @@ class FadingUI:
         fps_entry.pack(side="top", padx=5, pady=5)
 
         # --- Frames per Batch ---
-        tk.Label(diag, text="Frames per Batch:", bg=BG_COLOR).pack(
+        tk.Label(diag, text="Frames per Chunk:", bg=BG_COLOR).pack(
             side="top", padx=5, pady=5
         )
         batch_var = tk.StringVar(value="1000")
