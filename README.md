@@ -7,9 +7,6 @@ This application extracts the sky from webcams and creates an animation showing 
 ### UI
 ![capture](https://github.com/herdav/globalSkyCam/blob/main/img/ui-webcams.png)
 
-### Vertical Fading Generator
-![capture](https://github.com/herdav/globalSkyCam/blob/main/img/ui-generator.png)
-
 ### Statistic
 ![capture](https://github.com/herdav/globalSkyCam/blob/main/img/ui-stats.png)
 
