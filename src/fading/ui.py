@@ -33,7 +33,7 @@ class FadingUI:
         self.root = root
         self.root.title("Horizontal Fading")
         self.root.configure(bg=BG_COLOR)
-        self.root.geometry("1400x750")
+        self.root.geometry("1500x800")
 
         self.ffmpeg_path = r"C:\ffmpeg\bin\ffmpeg.exe"
 
@@ -59,16 +59,53 @@ class FadingUI:
             "gamma": None,
             "influence": None,
             "damping": None,
+            "midpoint": None,
+            "weighting": None,
             "result": None,
         }
 
         self._setup_ui()
 
     def _setup_ui(self):
-        # First row
-        self.top_frame_1 = tk.Frame(self.root, bg=BG_COLOR)
+        """
+        Creates a layout with:
+          - top_frame_1: row for file/subfolder buttons, "Calculate", "Export", width, height etc.
+          - top_frame_2: row for brightness slider, filter/reset, gamma/influence/damping, 
+                        plus Weight Mode dropdown **and** the Midpoint slider next to it.
+          - curve_frame on the right (spanning the height of top_frame_1 + top_frame_2) holding the weight-curve preview
+          - Below those, a checkbox_frame for subfolder items
+          - Finally, a display_canvas for the fade preview, and a status_label at the bottom
+        """
+
+        # Main container: left (two rows) + right (curve preview)
+        self.top_container = tk.Frame(self.root, bg=BG_COLOR)
+        self.top_container.pack(side="top", fill="x")
+
+        # ============ Right side => curve_frame ============
+        self.curve_frame = tk.Frame(self.top_container, bg=BG_COLOR)
+        self.curve_frame.pack(side="right", fill="y", padx=5, pady=5)
+
+        # curve_canvas inside curve_frame
+        self.curve_canvas_width = 256
+        self.curve_canvas_height = 100
+        self.curve_canvas = tk.Canvas(
+            self.curve_frame,
+            width=self.curve_canvas_width,
+            height=self.curve_canvas_height,
+            bg="white"
+        )
+        self.curve_canvas.pack(side="top", fill="both",
+                               expand=True, padx=5, pady=5)
+
+        # ============ Left side => two frames stacked (top_frame_1 + top_frame_2) ============
+        self.left_col_frame = tk.Frame(self.top_container, bg=BG_COLOR)
+        self.left_col_frame.pack(side="left", fill="x", expand=True)
+
+        # ============ Row1 => top_frame_1 ===========
+        self.top_frame_1 = tk.Frame(self.left_col_frame, bg=BG_COLOR)
         self.top_frame_1.pack(side="top", fill="x", pady=5)
 
+        # Buttons etc.
         self.btn_files = tk.Button(
             self.top_frame_1, text="Files", command=self.select_images, bg=BG_COLOR
         )
@@ -147,26 +184,26 @@ class FadingUI:
         )
         self.quit_btn.pack(side="left", padx=5)
 
-        # Second row
-        self.top_frame_2 = tk.Frame(self.root, bg=BG_COLOR)
-        self.top_frame_2.pack(side="top", fill="x", pady=5)
-
-        tk.Label(self.top_frame_2, text="Width:",
+        # Width/Height also in top_frame_1
+        tk.Label(self.top_frame_1, text="Width:",
                  bg=BG_COLOR).pack(side="left", padx=5)
-        self.width_entry = tk.Entry(self.top_frame_2, width=6)
-        self.width_entry.insert(0, "3840")
+        self.width_entry = tk.Entry(self.top_frame_1, width=6)
+        self.width_entry.insert(0, "11520")
         self.width_entry.pack(side="left", padx=5)
 
-        tk.Label(self.top_frame_2, text="Height:", bg=BG_COLOR).pack(
-            side="left", padx=5
-        )
-        self.height_entry = tk.Entry(self.top_frame_2, width=6)
-        self.height_entry.insert(0, "720")
+        tk.Label(self.top_frame_1, text="Height:",
+                 bg=BG_COLOR).pack(side="left", padx=5)
+        self.height_entry = tk.Entry(self.top_frame_1, width=6)
+        self.height_entry.insert(0, "2160")
         self.height_entry.pack(side="left", padx=5)
 
-        tk.Label(self.top_frame_2, text="Brightness:", bg=BG_COLOR).pack(
-            side="left", padx=5
-        )
+        # ============ Row2 => top_frame_2 ===========
+        self.top_frame_2 = tk.Frame(self.left_col_frame, bg=BG_COLOR)
+        self.top_frame_2.pack(side="top", fill="x", pady=5)
+
+        # Brightness + Filter
+        tk.Label(self.top_frame_2, text="Brightness:",
+                 bg=BG_COLOR).pack(side="left", padx=5)
         self.brightness_slider = tk.Scale(
             self.top_frame_2, from_=0, to=255, orient="horizontal", bg=BG_COLOR
         )
@@ -183,42 +220,87 @@ class FadingUI:
         )
         self.reset_btn.pack(side="left", padx=5)
 
+        # Gamma
         tk.Label(self.top_frame_2, text="Gamma:",
                  bg=BG_COLOR).pack(side="left", padx=5)
-        self.gamma_entry = tk.Entry(self.top_frame_2, width=4)
-        self.gamma_entry.insert(0, str(DEFAULT_GAMMA))
-        self.gamma_entry.pack(side="left", padx=5)
-
-        tk.Label(self.top_frame_2, text="Influence:", bg=BG_COLOR).pack(
-            side="left", padx=5
+        self.gamma_slider = tk.Scale(
+            self.top_frame_2,
+            from_=0.1,
+            to=10,
+            resolution=0.1,
+            orient="horizontal",
+            bg=BG_COLOR,
+            command=lambda val: self._draw_weight_curve()
         )
+        self.gamma_slider.set(DEFAULT_GAMMA)
+        self.gamma_slider.pack(side="left", padx=5)
+
+        # Influence
+        tk.Label(self.top_frame_2, text="Influence:",
+                 bg=BG_COLOR).pack(side="left", padx=5)
         self.influence_slider = tk.Scale(
             self.top_frame_2,
-            from_=-4,
+            from_=0,
             to=10,
             resolution=1,
             orient="horizontal",
             bg=BG_COLOR,
+            command=self._draw_weight_curve
         )
         self.influence_slider.set(DEFAULT_INFLUENCE)
         self.influence_slider.pack(side="left", padx=5)
 
+        # Damping
         tk.Label(self.top_frame_2, text="Damping:",
                  bg=BG_COLOR).pack(side="left", padx=5)
         self.damping_entry = tk.Entry(self.top_frame_2, width=6)
         self.damping_entry.insert(0, str(DEFAULT_DAMPING))
         self.damping_entry.pack(side="left", padx=5)
 
+        # Weight Mode
+        tk.Label(self.top_frame_2, text="Weighting:",
+                 bg=BG_COLOR).pack(side="left", padx=5)
+        self.weighting_var = tk.StringVar(value="Exponential")
+        self.weighting_cb = ttk.Combobox(
+            self.top_frame_2,
+            textvariable=self.weighting_var,
+            values=["Exponential", "Parabola"],
+            state="readonly"
+        )
+        self.weighting_cb.pack(side="left", padx=5)
+        self.weighting_cb.bind(
+            "<<ComboboxSelected>>", self._on_weighting_changed)
+
+        # Midpoint slider next to weighting
+        tk.Label(self.top_frame_2, text="Midpoint:",
+                 bg=BG_COLOR).pack(side="left", padx=5)
+        self.midpoint_var = tk.IntVar(value=128)
+        self.midpoint_slider = tk.Scale(
+            self.top_frame_2,
+            from_=1, to=255,
+            orient="horizontal",
+            variable=self.midpoint_var,
+            bg=BG_COLOR,
+            command=lambda val: self._draw_weight_curve()
+        )
+        self.midpoint_slider.pack(side="left", padx=5)
+
+        # below the top frames => checkbox_frame
+        self.checkbox_frame = tk.Frame(self.root, bg=BG_COLOR)
+        self.checkbox_frame.pack(side="top", fill="x", pady=5)
+
+        # final => display_canvas
+        self.display_canvas = tk.Canvas(self.root, bg=BG_COLOR)
+        self.display_canvas.pack(side="top", fill="both", expand=True)
+        self.display_canvas.bind("<Configure>", self.canvas_resized)
+
+        # status label
         self.status_label = tk.Label(
             self.root, text="", fg="blue", bg=BG_COLOR)
         self.status_label.pack(side="top", fill="x")
 
-        self.checkbox_frame = tk.Frame(self.root, bg=BG_COLOR)
-        self.checkbox_frame.pack(side="top", fill="x", pady=5)
-
-        self.display_canvas = tk.Canvas(self.root, bg=BG_COLOR)
-        self.display_canvas.pack(side="top", fill="both", expand=True)
-        self.display_canvas.bind("<Configure>", self.canvas_resized)
+        # initial draw
+        self._draw_weight_curve()
 
     def on_quit(self):
         self.root.destroy()
@@ -230,6 +312,16 @@ class FadingUI:
         )
         if path:
             self.ffmpeg_path = path
+
+    def _on_weighting_changed(self, evt):
+        mode = self.weighting_var.get()  # "Exponential" or "Parabola"
+        if mode == "Exponential":
+            # disable midpoint
+            self.midpoint_slider.config(state="disabled")
+        else:
+            # enable midpoint
+            self.midpoint_slider.config(state="normal")
+        self._draw_weight_curve()
 
     # ------------- Subfolder Nav -----------
     def prev_subfolder(self):
@@ -472,7 +564,7 @@ class FadingUI:
 
     def _get_gamma(self):
         try:
-            val = float(self.gamma_entry.get())
+            val = float(self.gamma_slider.get())
             if val <= 0:
                 raise ValueError
             return val
@@ -555,9 +647,11 @@ class FadingUI:
             self.status_label.config(text="Width/Height error.")
             return
 
-        gam = float(self.gamma_entry.get())
+        gam = float(self.gamma_slider.get())
         inf = float(self.influence_slider.get())
         dam = float(self.damping_entry.get())
+        mid = float(self.midpoint_var.get())
+        mod = self.weighting_var.get()
 
         c = self._last_fade_cache
         same_input = (
@@ -569,19 +663,21 @@ class FadingUI:
             and c["gamma"] == gam
             and c["influence"] == inf
             and c["damping"] == dam
+            and c["midpoint"] == mid
+            and c["weighting"] == mod
         )
         if same_input and c["result"] is not None:
             (
                 self.final_image,
                 self.boundary_positions,
                 self.filenames_at_boundaries,
-                avgc,
+                self.avgcols,
             ) = c["result"]
             self._draw_canvas()
             return
 
         fpar = FadeParams(width=w_, height=h_, gamma=gam,
-                          influence=inf, damping=dam)
+                          influence=inf, damping=dam, midpoint=mid, weighting=mod)
         res = fading.FadingLogic.build_horizontal_fade(
             active_paths, br_list, px_list, fpar)
         if not res:
@@ -619,6 +715,8 @@ class FadingUI:
         c["gamma"] = gam
         c["influence"] = inf
         c["damping"] = dam
+        c["midpoint"] = mid
+        c["weighting"] = mod
         c["result"] = (
             self.final_image,
             self.boundary_positions,
@@ -627,7 +725,74 @@ class FadingUI:
         )
         self._draw_canvas()
 
+    def _draw_weight_curve(self, evt=None):
+        """
+        Draws the curve in self.curve_canvas based on:
+          weighting_var: "Exponential" or "Parabola"
+          gamma_slider
+          influence_slider
+          midpoint_slider
+        """
+        # 1) get current param
+        mode = self.weighting_var.get()  # "Exponential" or "Parabola"
+        gamma_val = float(self.gamma_slider.get())
+        influence_val = float(self.influence_slider.get())
+        midpoint = float(self.midpoint_var.get())
+
+        w_can = self.curve_canvas_width
+        h_can = self.curve_canvas_height
+
+        margin = 5
+        plot_width = w_can - 2*margin
+        plot_height = h_can - 2*margin
+
+        points = []
+        for x in range(256):
+            # gamma transform
+            xg = ((x / 255.0) ** gamma_val) * 255.0
+
+            if mode == "Exponential":
+                # old approach => weight = (xg/255.0)
+                # => optional influence => weight = ( xg/255 )^influence
+                # clamp 0..1
+                lin_0to1 = (xg / 255.0)
+                if lin_0to1 < 0:
+                    lin_0to1 = 0
+                if lin_0to1 > 1:
+                    lin_0to1 = 1
+                if influence_val != 0:
+                    wraw = (lin_0to1 ** influence_val)
+                else:
+                    wraw = lin_0to1
+
+            else:
+                # "Parabola"
+                norm = (xg - midpoint) / midpoint
+                wraw = 1.0 - (norm*norm)
+                if wraw < 0:
+                    wraw = 0.0
+                if influence_val != 0:
+                    wraw = wraw ** influence_val
+
+            if wraw > 1:
+                wraw = 1
+            if wraw < 0:
+                wraw = 0
+
+            # compute coords
+            xplot = margin + plot_width*(x/255.0)
+            yplot = margin + plot_height*(1.0 - wraw)
+            points.append((xplot, yplot))
+
+        self.curve_canvas.delete("all")
+        # draw polyline
+        for i in range(255):
+            x1, y1 = points[i]
+            x2, y2 = points[i+1]
+            self.curve_canvas.create_line(x1, y1, x2, y2, fill="blue")
+
     # ------------- Export Current -------------
+
     def export_current_image(self):
         if self.final_image is None:
             self.status_label.config(text="No fade to export.")
@@ -636,10 +801,11 @@ class FadingUI:
         if not os.path.exists(out_folder):
             os.makedirs(out_folder)
         now_s = datetime.now().strftime("%Y%m%d_%H%M%S")
-        gam_ = self.gamma_entry.get()
+        gam_ = self.gamma_slider.get()
         inf_ = self.influence_slider.get()
         dam_ = self.damping_entry.get()
-        ftag = f"{now_s}_fading_g{gam_}i{inf_}d{dam_}"
+        mid_ = self.midpoint_var.get()
+        ftag = f"{now_s}_fading_g{gam_}i{inf_}d{dam_}m{mid_}"
         png_name = os.path.join(out_folder, f"{ftag}_current.png")
         cv2.imwrite(png_name, self.final_image)
         self.status_label.config(text=f"Exported current => {png_name}")
@@ -647,11 +813,9 @@ class FadingUI:
     # ------------- Export Video -------------
     def export_video(self):
         """
-        Opens a dialog to configure crossfade-video export.
-        It prompts for number of crossfades, FPS, frames per batch, workers, 
-        delete-chunks option, and now also 'Ghost Frames'.
+        Opens a dialog to configure crossfade-video export,
+        including subfolder-slicing via Start/End comboboxes.
         """
-
         if self.current_mode != MODE_SUBFOLDERS or len(self.subfolder_names) < 2:
             self.status_label.config(
                 text="Need multiple subfolders for global approach."
@@ -661,6 +825,21 @@ class FadingUI:
         diag = tk.Toplevel(self.root)
         diag.title("Export")
         diag.configure(bg=BG_COLOR)
+
+        # --- Start/End Subfolder row ---
+        tk.Label(diag, text="Start Folder:", bg=BG_COLOR).pack(
+            side="top", padx=5, pady=2)
+        start_sub_cb = ttk.Combobox(
+            diag, state="readonly", values=self.subfolder_names)
+        start_sub_cb.pack(side="top", padx=5, pady=2)
+        start_sub_cb.current(0)  # default first
+
+        tk.Label(diag, text="End Folder:", bg=BG_COLOR).pack(
+            side="top", padx=5, pady=2)
+        end_sub_cb = ttk.Combobox(
+            diag, state="readonly", values=self.subfolder_names)
+        end_sub_cb.pack(side="top", padx=5, pady=2)
+        end_sub_cb.current(len(self.subfolder_names)-1)  # default last
 
         # --- Steps (Crossfades) ---
         tk.Label(diag, text="Number of Crossfades:", bg=BG_COLOR).pack(
@@ -687,12 +866,27 @@ class FadingUI:
         batch_entry.pack(side="top", padx=5, pady=5)
 
         # --- Ghost Frames ---
-        tk.Label(diag, text="Ghost Frames:", bg=BG_COLOR).pack(
+        tk.Label(diag, text="Ghost Frames:\n(Expensive, forces linear calculation.)", bg=BG_COLOR).pack(
             side="top", padx=5, pady=5
         )
-        ghost_var = tk.StringVar(value="3")
+        ghost_var = tk.StringVar(value="0")
         ghost_entry = tk.Entry(diag, textvariable=ghost_var)
         ghost_entry.pack(side="top", padx=5, pady=5)
+
+        # --- Splits (1..3) ---
+        tk.Label(diag, text="Final Videos:", bg=BG_COLOR).pack(
+            side="top", padx=5, pady=5
+        )
+        split_slider = tk.Scale(
+            diag,
+            from_=1,
+            to=3,
+            orient="horizontal",
+            resolution=1,
+            bg=BG_COLOR
+        )
+        split_slider.set(1)
+        split_slider.pack(side="top", padx=5, pady=5)
 
         # --- Workers ---
         tk.Label(diag, text="Workers:", bg=BG_COLOR).pack(
@@ -707,7 +901,6 @@ class FadingUI:
             resolution=1,
             bg=BG_COLOR
         )
-        # Set a default (for example 8) if 8 <= max_cpu, otherwise max_cpu
         default_workers = 8 if 8 <= max_cpu else max_cpu
         worker_slider.set(default_workers)
         worker_slider.pack(side="top", padx=5, pady=5)
@@ -720,6 +913,7 @@ class FadingUI:
         progress_bar = ttk.Progressbar(
             prog_frame, length=300, mode="determinate"
         )
+        progress_bar.pack(side="top", padx=10, pady=2)
 
         delete_var = tk.BooleanVar(value=True)
         delete_chk = tk.Checkbutton(
@@ -727,21 +921,39 @@ class FadingUI:
         )
         delete_chk.pack(side="top", padx=5, pady=5)
 
-        progress_bar.pack(side="top", padx=10, pady=2)
-
         def on_ok():
             start_export = time.time()
             try:
+                start_sub = start_sub_cb.get()
+                end_sub = end_sub_cb.get()
+
+                # find their indices
+                start_idx = self.subfolder_names.index(start_sub)
+                end_idx = self.subfolder_names.index(end_sub)
+                if start_idx > end_idx:
+                    messagebox.showerror(
+                        "Error", "Start folder is after End folder. Please fix order."
+                    )
+                    return
+
                 steps_val = int(steps_var.get())
                 fps_val = int(fps_var.get())
                 frames_val = int(batch_var.get())
                 workers_val = int(worker_slider.get())
                 ghost_val = int(ghost_var.get())
-                if steps_val < 1 or fps_val < 1 or frames_val < 1 or workers_val < 1 or ghost_val < 1:
+                split_val = int(split_slider.get())
+                if (
+                    steps_val < 1 or
+                    fps_val < 1 or
+                    frames_val < 1 or
+                    workers_val < 1 or
+                    ghost_val < 0 or
+                    split_val < 1 or split_val > 3
+                ):
                     raise ValueError
             except ValueError:
                 messagebox.showerror(
-                    "Error", "Invalid steps/fps/frames-batch/worker/ghost-frame number."
+                    "Error", "Invalid parameters."
                 )
                 return
 
@@ -749,16 +961,24 @@ class FadingUI:
                 self.status_label.config(text="Invalid ffmpeg path.")
                 return
 
-            # 1) build single fade for each subfolder => subfolder_fade_info
-            if not self._build_subfolder_fades():
+            # build a sub-list of subfolders in [start_idx..end_idx]
+            chosen_subfolders = self.subfolder_names[start_idx: end_idx + 1]
+            if len(chosen_subfolders) < 2:
                 messagebox.showerror(
-                    "Error", "Could not build fade for subfolders."
+                    "Error", f"Need at least 2 subfolders in the range, found {len(chosen_subfolders)}."
                 )
                 return
 
-            # 2) build global spline
-            ret_spline = fading.FadingLogic.build_cubicspline_subfolders(
-                self.subfolder_names, self.subfolder_fade_info, steps_val
+            # 1) build single fade for each subfolder => subfolder_fade_info (just for the chosen range)
+            if not self._build_subfolder_fades_range(chosen_subfolders):
+                messagebox.showerror(
+                    "Error", "Could not build fade for chosen subfolders."
+                )
+                return
+
+            # 2) build global spline with that sub-range
+            ret_spline = fading.FadingLogic.subfolder_interpolation_data(
+                chosen_subfolders, self.subfolder_fade_info, steps_val
             )
             if not ret_spline:
                 messagebox.showerror(
@@ -774,10 +994,11 @@ class FadingUI:
                 os.makedirs(out_folder)
 
             now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            igam = self.gamma_entry.get()
+            igam = self.gamma_slider.get()
             iinf = self.influence_slider.get()
-            idev = self.damping_entry.get()
-            ftag = f"{now_str}_fading_g{igam}i{iinf}d{idev}"
+            idam = self.damping_entry.get()
+            imid = self.midpoint_var.get()
+            ftag = f"{now_str}_fading_g{igam}i{iinf}d{idam}m{imid}"
 
             # 3) partial frames => chunk => final merge
             fading.FadingLogic.export_crossfade_video(
@@ -796,7 +1017,8 @@ class FadingUI:
                 progress_bar=progress_bar,
                 diag=diag,
                 delete_chunks=delete_var.get(),
-                ghost_count=ghost_val
+                ghost_count=ghost_val,
+                split_count=split_val
             )
             diag.destroy()
             elap = time.time() - start_export
@@ -819,9 +1041,10 @@ class FadingUI:
         if len(self.subfolder_names) < 2:
             return False
         w_, h_ = self._get_dimensions()
-        gam_ = float(self.gamma_entry.get())
+        gam_ = float(self.gamma_slider.get())
         inf_ = float(self.influence_slider.get())
         dam_ = float(self.damping_entry.get())
+        mid_ = float(self.midpoint_var.get())
 
         for sf in self.subfolder_names:
             off_map = self.subfolder_data[sf]
@@ -856,7 +1079,7 @@ class FadingUI:
             if len(active_p) < 2:
                 return False
             fpar = FadeParams(
-                width=w_, height=h_, gamma=gam_, influence=inf_, damping=dam_
+                width=w_, height=h_, gamma=gam_, influence=inf_, damping=dam_, midpoint=mid_
             )
             r = fading.FadingLogic.build_horizontal_fade(
                 active_p, br_l, px_l, fpar)
@@ -870,6 +1093,89 @@ class FadingUI:
                 average_colors=avgcols,
                 transitions=[],
             )
+        return True
+
+    def _build_subfolder_fades_range(self, sub_list: List[str]) -> bool:
+        """
+        Similar to _build_subfolder_fades(), but only for the given sub_list of subfolders.
+        Rebuilds fade info in self.subfolder_fade_info[sf].
+        Returns True on success, False if something fails.
+        """
+        if len(sub_list) < 2:
+            return False
+
+        w_, h_ = self._get_dimensions()
+        gam_ = float(self.gamma_slider.get())
+        inf_ = float(self.influence_slider.get())
+        dam_ = float(self.damping_entry.get())
+        mid_ = float(self.midpoint_var.get())
+
+        # We clear subfolder_fade_info only partially or fully?
+        # Option: do a partial approach or just build fresh for these subfolders.
+        # For simplicity, just build fresh for them:
+        # We do NOT clear the entire dictionary, in case we want to reuse info for other subfolders...
+        # but we can override the relevant sub_list ones.
+
+        for sf in sub_list:
+            off_map = self.subfolder_data[sf]
+            fi = []
+            for off_val, (fp, px) in off_map.items():
+                fi.append((fp, px, off_val))
+            fi.sort(key=lambda x: x[2])
+
+            # gather images
+            self.image_data.clear()
+            g_ = self._get_gamma()
+            for fp, px, offv in fi:
+                var = tk.BooleanVar(value=True)
+                br = fading.ImageHelper.calculate_brightness(fp, g_)
+                self.image_data.append(
+                    ImageData(
+                        file_path=fp,
+                        check_var=var,
+                        brightness_value=br,
+                        offset=offv,
+                        is_proxy=px,
+                    )
+                )
+
+            # active subset
+            active_p = []
+            br_l = []
+            px_l = []
+            for d in self.image_data:
+                if d.check_var.get():
+                    active_p.append(d.file_path)
+                    br_l.append(d.brightness_value)
+                    px_l.append(d.is_proxy)
+            if len(active_p) < 2:
+                return False
+
+            fpar = FadeParams(
+                width=w_,
+                height=h_,
+                gamma=gam_,
+                influence=inf_,
+                damping=dam_,
+                midpoint=mid_,
+                weighting=self.weighting_var.get(),
+            )
+
+            r = fading.FadingLogic.build_horizontal_fade(
+                active_p, br_l, px_l, fpar
+            )
+            if not r:
+                return False
+
+            (fimg, bpos, fnames, avgcols) = r
+            self.subfolder_fade_info[sf] = SubfolderFadeData(
+                final_image=fimg,
+                boundary_positions=bpos,
+                filenames_at_boundaries=fnames,
+                average_colors=avgcols,
+                transitions=[],
+            )
+
         return True
 
     def _get_dimensions(self):
