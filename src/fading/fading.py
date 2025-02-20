@@ -9,7 +9,7 @@ import subprocess
 from datetime import datetime
 import time
 
-MIN_SEG_DIST = 6  # 6 if resolution is 5760x1080px
+MIN_SEG_DIST = 4  # 6 if resolution >= 5760x1080px
 
 
 class ImageHelper:
@@ -93,16 +93,22 @@ class FadingLogic:
 
     @staticmethod
     def build_horizontal_fade(
-        active_paths: List[str],
-        brightness_list: List[int],
-        proxy_list: List[bool],
+        active_paths: list[str],
+        brightness_list: list[int],
+        proxy_list: list[bool],
         fade_params: FadeParams
     ):
         """
-        Performs a horizontal fade, with a check for very narrow segments.
-        Any segment below MIN_SEG_DIST pixels wide is simply recolored
-        to match the average of its neighbors.
+        Builds a horizontal fade based on either a Exponential weighting or a Parabola weighting.
+        If weighting == 'Exponential', weights = (brightness/255)^influence.
+        If weighting == 'Parabola', weights = [1 - ((b-midpoint)/midpoint)^2]^influence.
+        Then damping is applied, and segments are built.
+
+        Returns:
+          (final_img, boundaries, filenames, loaded_colors)
         """
+        import cv2
+        import numpy as np
 
         if len(active_paths) < 2:
             return None
@@ -111,44 +117,66 @@ class FadingLogic:
         h_total = fade_params.height
         influence_val = fade_params.influence
         damping_val = fade_params.damping
+        gamma_val = fade_params.gamma
+        midpoint_val = fade_params.midpoint
+        weighting = getattr(fade_params, "weighting",
+                            "Parabola")  # default if missing
 
-        # final fade image
         final_img = np.zeros((h_total, w_total, 3), dtype=np.uint8)
         boundaries = []
         fnames = []
         n = len(active_paths)
 
-        # 1) Load row-average colors
+        # load row-average
         loaded_colors = []
-        for i, path in enumerate(active_paths):
-            img = cv2.imread(path)
+        for i, p in enumerate(active_paths):
+            img = cv2.imread(p)
             if img is None:
-                # fallback dummy
+                # fallback
                 dummy = np.zeros((10, 10, 3), dtype=np.uint8)
                 ratio = float(h_total)/10.0
                 new_w = max(1, int(10*ratio))
                 rz = cv2.resize(dummy, (new_w, h_total))
-                avg = FadingLogic.calculate_horizontal_average(rz)
+                avg = np.mean(rz, axis=1).astype(np.uint8)
             else:
                 ratio = float(h_total) / float(img.shape[0])
-                new_w = max(1, int(img.shape[1] * ratio))
+                new_w = max(1, int(img.shape[1]*ratio))
                 rz = cv2.resize(img, (new_w, h_total))
-                avg = FadingLogic.calculate_horizontal_average(rz)
+                avg = np.mean(rz, axis=1).astype(np.uint8)
             loaded_colors.append(avg)
 
-        # 2) Compute transition weights
         transitions = []
         original = []
         for i in range(n-1):
             ab = (brightness_list[i] + brightness_list[i+1]) * 0.5
-            if influence_val == 0:
-                wgt = 1.0
+            if ab < 0:
+                ab = 0
+            if ab > 255:
+                ab = 255
+
+            if weighting == "Exponential":
+                # exponential => wraw = (ab/255)
+                w_lin = ab / 255.0
+                if w_lin < 0:
+                    w_lin = 0
+                if w_lin > 1:
+                    w_lin = 1
+                if influence_val != 0:
+                    wgt_final = w_lin**influence_val
+                else:
+                    wgt_final = w_lin
             else:
-                safe_bright = max(1, ab)
-                wgt = (safe_bright ** influence_val)
-                if wgt < 1e-6:
-                    wgt = 0
-            transitions.append(wgt)
+                # square parabola => w_parab = 1 - ((ab-mid)/mid)^2
+                norm = (ab - midpoint_val) / float(midpoint_val)
+                wraw = 1.0 - (norm*norm)
+                if wraw < 0:
+                    wraw = 0
+                if influence_val != 0:
+                    wgt_final = (wraw**influence_val)
+                else:
+                    wgt_final = wraw
+
+            transitions.append(wgt_final)
             original.append(1.0)
 
         sum_w = sum(transitions)
@@ -156,16 +184,15 @@ class FadingLogic:
             return None
         sum_o = sum(original)
 
-        # 3) Distribute segment widths with damping
         segw_float = []
         for i in range(n-1):
             w_i = transitions[i]
             frac_inf = w_i / sum_w
             frac_ori = original[i] / sum_o
-            infl_w = w_total * frac_inf
-            orig_w = w_total * frac_ori
+            infl_w = w_total*frac_inf
+            orig_w = w_total*frac_ori
             diff = infl_w - orig_w
-            max_shift = orig_w * (damping_val / 100.0)
+            max_shift = orig_w*(damping_val/100.0)
             if abs(diff) > max_shift:
                 if diff > 0:
                     infl_w = orig_w + max_shift
@@ -173,9 +200,9 @@ class FadingLogic:
                     infl_w = orig_w - max_shift
             segw_float.append(infl_w)
 
+        # distribute
         seg_int = FadingLogic.distribute_segment_widths(segw_float, w_total)
 
-        # 4) Build the fade
         x_start = 0
         for i in range(n-1):
             seg_pix = seg_int[i]
@@ -189,56 +216,54 @@ class FadingLogic:
 
             leftC = loaded_colors[i]
             rightC = loaded_colors[i+1]
-
-            x_end = x_start + seg_pix
+            x_end = x_start+seg_pix
             if x_end > w_total:
                 x_end = w_total
-            seg_w = x_end - x_start
+            seg_w = x_end-x_start
             if seg_w < 1:
                 boundaries.append(x_start)
                 fnames.append((fname, is_proxy))
                 continue
 
-            # construct gradient
             xi = np.linspace(
                 0.0, 1.0, seg_w, dtype=np.float32).reshape(1, seg_w, 1)
             leftC_resh = leftC.reshape(h_total, 1, 3)
             rightC_resh = rightC.reshape(h_total, 1, 3)
-            grad = (1.0 - xi) * leftC_resh + xi * rightC_resh
+            grad = (1.0 - xi)*leftC_resh + xi*rightC_resh
             grad = grad.astype(np.uint8)
 
-            # If segment < MIN_SEG_DIST, recolor it to neighbors' average
+            from fading import MIN_SEG_DIST
             if seg_w < MIN_SEG_DIST:
-                # simply set grad to the average of leftC and rightC
-                avg_neighbor = 0.5 * leftC_resh + 0.5 * rightC_resh
+                # fill with average
+                avg_neighbor = 0.5*leftC_resh + 0.5*rightC_resh
                 avg_neighbor = avg_neighbor.astype(np.uint8)
                 grad = np.repeat(avg_neighbor, seg_w, axis=1)
 
-            # place into final_img
-            try:
-                final_img[:, x_start: x_start + seg_w] = grad
-            except ValueError as e:
-                print("[ERROR] dimension mismatch:", e)
+            final_img[:, x_start:x_start+seg_w] = grad
 
             boundaries.append(x_start)
             fnames.append((fname, is_proxy))
             x_start = x_end
 
-        # add last boundary
         lastn = os.path.basename(active_paths[-1])
         lastpx = proxy_list[-1]
-        boundaries.append(w_total - 1)
+        boundaries.append(w_total-1)
         fnames.append((lastn, lastpx))
 
         return (final_img, boundaries, fnames, loaded_colors)
 
     @staticmethod
-    def distribute_segment_widths(w_list: List[float], width_total: int) -> List[int]:
+    def distribute_segment_widths(w_list: list[float], width_total: int) -> list[int]:
+        """
+        Converts float segment widths to int,
+        ensuring sum(...) == width_total.
+        """
         sm = sum(w_list)
         if sm <= 0:
             out = [0] * (len(w_list) - 1)
             out.append(width_total)
             return out
+        # check if sum close to width_total
         if abs(sm - width_total) < 1e-5:
             w_scaled = w_list[:]
         elif sm > width_total:
@@ -247,8 +272,10 @@ class FadingLogic:
         else:
             leftover = width_total - sm
             w_scaled = [wi + (wi / sm) * leftover for wi in w_list]
+
         w_int = [int(round(x)) for x in w_scaled]
         diff = width_total - sum(w_int)
+
         if diff > 0:
             idx = 0
             while diff > 0 and idx < len(w_int):
@@ -267,14 +294,15 @@ class FadingLogic:
                 idx += 1
                 if idx >= len(w_int):
                     idx = 0
+
         return w_int
 
     @staticmethod
-    def build_cubicspline_subfolders(
+    def subfolder_interpolation_data(
         subfolder_names: List[str], subfolder_fade_info: dict, steps: int
     ):
         """
-        Creates a cubic spline across subfolders => total_frames= steps*(m-1).
+        Prepares global interpolation data from subfolder fades.
         """
         m = len(subfolder_names)
         if m < 2:
@@ -332,6 +360,7 @@ class FadingLogic:
         h: int
     ):
         from scipy.interpolate import CubicSpline
+        # from scipy.interpolate import PchipInterpolator
 
         n_boundaries = len(boundary_splines_data)
         global_boundaries = []
@@ -340,6 +369,7 @@ class FadingLogic:
         for j in range(n_boundaries):
             arr_j = boundary_splines_data[j]
             spl_j = CubicSpline(keyframe_times, arr_j)
+            # spl_j = PchipInterpolator(keyframe_times, arr_j)
             x_val = float(spl_j(t_global))
             global_boundaries.append(int(round(x_val)))
 
@@ -424,36 +454,40 @@ class FadingLogic:
         progress_bar,
         diag,
         delete_chunks: bool = True,
-        ghost_count: int = 5
+        ghost_count: int = 5,
+        split_count: int = 1
     ):
         """
         Renders frames => partial .mp4 in 'output/chunk' => merges => final in 'output'.
-        Also applies a 'ghosting' effect with 'ghost_count' frames of recursion,
-        meaning each new frame is averaged with its previously ghosted frames.
+        Also applies:
+          - 'ghosting' effect (Variant B) with 'ghost_count' frames
+          - horizontal splitting into 'split_count' parts => each part gets its own .mp4
+
+        If ghost_count <= 0 => no ghosting is applied.
+        If split_count=1 => normal single video.
+
+        We'll store chunkfiles separately for each part. Then do a final merge per part.
 
         Args:
-            keyframe_times: The normalized t-values for each subfolder keyframe (0..1).
-            boundary_splines_data: A list of boundary positions (in px) for each segment, per keyframe.
-            color_splines_data: A list of average-color arrays for each segment, per keyframe.
-            w, h: Frame dimensions (px).
-            total_frames: The total number of frames to render (crossfade steps*(m-1)).
-            fps_val: Video frames per second.
-            frames_per_batch: How many frames we encode in one chunk.
-            worker_count: Number of parallel processes for CPU-bound tasks.
-            ffmpeg_path: Path to ffmpeg.exe.
-            out_folder: Destination folder (e.g. 'output').
-            file_tag: Used for naming the .mp4 output file(s).
-            progress_bar: A tkinter Progressbar to update UI progress.
-            diag: The tk.Toplevel window for refreshing UI.
-            delete_chunks: If True, intermediate chunk files will be deleted after merging.
-            ghost_count: Number of frames to blend in a rolling ghosting manner.
-                        Must be >= 1. For example, 5 means each new frame is
-                        ( raw_frame + 4 previous ghosted frames ) / 5.
+            keyframe_times, boundary_splines_data, color_splines_data: data from subfolder_interpolation_data
+            w, h: Frame dimension
+            total_frames: how many frames total
+            fps_val: frames per second
+            frames_per_batch: chunk size
+            worker_count: concurrency
+            ffmpeg_path: path to ffmpeg
+            out_folder: e.g. 'output'
+            file_tag: naming prefix for mp4
+            progress_bar, diag: for UI updating
+            delete_chunks: if True, remove chunk files after merge
+            ghost_count: frames for ghosting variant B
+            split_count: how many horizontal splits (1..3)
         """
         import math
 
-        # We'll store the last ghost_count-1 "ghosted" frames to handle chunk transitions.
-        carry_over_ghost_frames = []
+        # This will hold the chunk path-lists per "part"
+        # e.g. if split_count=3 => chunk_paths_per_part = [[],[],[]]
+        chunk_paths_per_part = [[] for _ in range(split_count)]
 
         chunk_folder = os.path.join(out_folder, "chunk")
         if not os.path.exists(chunk_folder):
@@ -468,16 +502,56 @@ class FadingLogic:
             t = f_idx / total_frames
             tasks.append((f_idx, t))
 
-        chunk_paths = []
-        start_i = 0
         chunk_idx = 1
+        start_i = 0
         chunk_total = math.ceil((total_frames + 1) / frames_per_batch)
+
+        # function to compute the 'width' of each part
+        # handle if not divisible
+        def get_part_slice(p: int, split_count: int, frame_width: int):
+            """
+            For part p in [0..split_count-1], returns (x_start, x_end)
+            so the final segments sum up to frame_width.
+            """
+            base_w = frame_width // split_count
+            remainder = frame_width % split_count
+            x_start = p * base_w
+            # distribute remainder among the first 'remainder' parts
+            if p < remainder:
+                x_start += p
+                part_w = base_w + 1
+            else:
+                x_start += remainder
+                part_w = base_w
+            x_end = x_start + part_w
+            return x_start, x_end
 
         while start_i <= total_frames:
             end_i = min(start_i + frames_per_batch, total_frames + 1)
-            chunk_name = f"{file_tag}_chunk_{chunk_idx:03d}.mp4"
-            chunk_path = os.path.join(chunk_folder, chunk_name)
-            chunk_paths.append(chunk_path)
+
+            # create video writers for each part
+            # chunk_name e.g. {file_tag}_chunk_001_part_1.mp4
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer_parts = []
+            for p in range(split_count):
+                # figure out slice w
+                xs, xe = get_part_slice(p, split_count, w)
+                part_w = xe - xs
+                part_h = h
+
+                chunk_name = f"{file_tag}_chunk_{chunk_idx:03d}_part_{p+1}.mp4"
+                chunk_path = os.path.join(chunk_folder, chunk_name)
+                # remember this path to merge later
+                chunk_paths_per_part[p].append(chunk_path)
+
+                vw = cv2.VideoWriter(
+                    chunk_path,
+                    fourcc,
+                    float(fps_val),
+                    (part_w, part_h),
+                    True
+                )
+                writer_parts.append(vw)
 
             chunk_start_time = time.time()
             print(
@@ -485,16 +559,11 @@ class FadingLogic:
             )
 
             subset = tasks[start_i:end_i]
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            writer = cv2.VideoWriter(
-                chunk_path, fourcc, float(fps_val), (w, h), True
-            )
 
-            # We'll use a local buffer for ghost frames in this chunk.
-            # Initialize it with carry_over_ghost_frames from previous chunk.
-            ghost_buffer = [gf for gf in carry_over_ghost_frames]
-            carry_over_ghost_frames = []  # reset after copying
+            # ghost buffer
+            carry_over_ghost_frames = []
 
+            # 1) Build raw frames in parallel
             with concurrent.futures.ProcessPoolExecutor(
                 max_workers=worker_count
             ) as executor:
@@ -512,7 +581,6 @@ class FadingLogic:
                     )
                     fut_map[fut] = fid
 
-                # Collect frames in completion order
                 result_frames = {}
                 for fut in concurrent.futures.as_completed(fut_map):
                     fi = fut_map[fut]
@@ -530,99 +598,98 @@ class FadingLogic:
                         progress_bar["value"] += 1
                         diag.update_idletasks()
 
-            # Now we must write frames in ascending order to the chunk,
-            # applying the ghosting effect.
+            # 2) Write frames in ascending order, applying ghosting if ghost_count>0
+            # but note: we also do splitting => each part gets a slice
             for fid in range(start_i, end_i):
                 raw_frame = result_frames.get(fid, None)
                 if raw_frame is None:
                     continue
 
-                # Convert to float32 for summation
-                # ghost_buffer already stored ghosted frames as uint8, so convert each to float32
-                acc = raw_frame.astype(np.float32)
-                # We add the existing ghosted frames from the buffer
-                for gfr in ghost_buffer:
-                    acc += gfr.astype(np.float32)
+                # ghosting
+                if ghost_count > 0:
+                    # sum up with ghost_buffer
+                    acc = raw_frame.astype(np.float32)
+                    for gfr in carry_over_ghost_frames:
+                        acc += gfr.astype(np.float32)
+                    divisor = 1 + len(carry_over_ghost_frames)
+                    if divisor > ghost_count:
+                        divisor = ghost_count
+                    ghosted_frame = (acc / float(divisor)).astype(np.uint8)
 
-                # Determine the actual divisor:
-                # always sums (raw_frame + all ghosted frames).
-                # We want in total ghost_count frames if ghost_buffer already has (ghost_count-1).
-                divisor = 1 + len(ghost_buffer)
-                # But we want to ensure it doesn't exceed 'ghost_count'
-                # If len(ghost_buffer) >= ghost_count-1, we do a full average over ghost_count.
-                # If ghost_buffer is smaller at the chunk start, we do partial.
-                # We typically clamp to ghost_count if divisor > ghost_count,
-                # but if ghost_buffer is long, we pop from it. Let's see:
-                if divisor > ghost_count:
-                    # This can occur if ghost_buffer is bigger than ghost_count-1 for some reason
-                    # (shouldn't happen if we handle the buffer size carefully).
-                    divisor = ghost_count
+                    # push to buffer
+                    carry_over_ghost_frames.append(ghosted_frame)
+                    if len(carry_over_ghost_frames) > (ghost_count - 1):
+                        carry_over_ghost_frames.pop(0)
 
-                # finalize ghosted frame
-                ghosted_frame = (acc / float(divisor)).astype(np.uint8)
+                    frame_out = ghosted_frame
+                else:
+                    # no ghosting
+                    frame_out = raw_frame
 
-                # push this ghosted frame into the buffer
-                ghost_buffer.append(ghosted_frame)
-                # keep only the last (ghost_count - 1)
-                if len(ghost_buffer) > (ghost_count - 1):
-                    ghost_buffer.pop(0)
+                # 3) split horizontally, write each part
+                for p in range(split_count):
+                    x_start, x_end = get_part_slice(p, split_count, w)
+                    slice_part = frame_out[:, x_start:x_end]
+                    writer_parts[p].write(slice_part)
 
-                # write to video
-                writer.write(ghosted_frame)
-
-            writer.release()
+            # done chunk => release all writers
+            for wpart in writer_parts:
+                wpart.release()
 
             chunk_time = time.time() - chunk_start_time
             c_mins = int(chunk_time // 60)
             c_secs = int(chunk_time % 60)
             if c_mins > 0:
                 print(
-                    f"[INFO] chunk {chunk_idx} done in {c_mins}min {c_secs}s."
-                )
+                    f"[INFO] chunk {chunk_idx} done in {c_mins}min {c_secs}s.")
             else:
                 print(f"[INFO] chunk {chunk_idx} done in {c_secs}s.")
-
-            # After finishing this chunk, store last ghost_count-1 ghosted frames
-            # so next chunk can continue the "ghost" effect over chunk boundary.
-            if len(ghost_buffer) > 0:
-                carry_over_ghost_frames = ghost_buffer[-(ghost_count - 1):]
 
             start_i = end_i
             chunk_idx += 1
 
-        # MERGE step
-        now_s = datetime.now().strftime("%Y%m%d_%H%M%S")
-        list_path = os.path.join(f"chunk_{now_s}.txt")
-        with open(list_path, "w", encoding="utf-8") as f:
-            for cpath in chunk_paths:
-                f.write(f"file '{cpath}'\n")
+        # MERGE step => now we have 'split_count' sets of chunkfiles
+        final_mp4_list = []
+        for p in range(split_count):
+            now_s = datetime.now().strftime("%Y%m%d_%H%M%S")
+            list_path = os.path.join(f"chunk_{now_s}_part_{p+1}.txt")
+            with open(list_path, "w", encoding="utf-8") as f:
+                for cpath in chunk_paths_per_part[p]:
+                    f.write(f"file '{cpath}'\n")
 
-        final_mp4 = os.path.join(out_folder, f"{file_tag}.mp4")
-        cmd = [
-            ffmpeg_path,
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            list_path,
-            "-c",
-            "copy",
-            final_mp4,
-        ]
-        print("[MERGE] running:", " ".join(cmd))
-        ret = subprocess.run(cmd, check=False)
-        if ret.returncode == 0:
-            print(f"[MERGE] success => {final_mp4}")
-            if delete_chunks:
-                for cp in chunk_paths:
+            final_mp4 = os.path.join(out_folder, f"{file_tag}_part_{p+1}.mp4")
+            cmd = [
+                ffmpeg_path,
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                list_path,
+                "-c",
+                "copy",
+                final_mp4,
+            ]
+            print("[MERGE] running:", " ".join(cmd))
+            ret = subprocess.run(cmd, check=False)
+            if ret.returncode == 0:
+                print(f"[MERGE] success => {final_mp4}")
+                if delete_chunks:
+                    # remove chunkfiles for part p
+                    for cp in chunk_paths_per_part[p]:
+                        try:
+                            os.remove(cp)
+                        except:
+                            pass
                     try:
-                        os.remove(cp)
+                        os.remove(list_path)
                     except:
                         pass
-                try:
-                    os.remove(list_path)
-                except:
-                    pass
-        else:
-            print(f"[MERGE] ffmpeg merge failed => code {ret.returncode}")
+                final_mp4_list.append(final_mp4)
+            else:
+                print(f"[MERGE] ffmpeg merge failed => code {ret.returncode}")
+
+        # done
+        print(f"[INFO] Finished split_count={split_count}, final files:")
+        for fmp4 in final_mp4_list:
+            print("  ", fmp4)
