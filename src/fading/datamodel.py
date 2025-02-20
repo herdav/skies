@@ -42,12 +42,10 @@ class SubfolderFadeData:
 
 @dataclass
 class FadeParams:
-    """
-    Holds the core parameters for building a fade.
-    """
-
     width: int
     height: int
     gamma: float
     influence: float
     damping: float
+    midpoint: float
+    weighting: str
