@@ -1,13 +1,16 @@
-import os
-import cv2
-import re
-import numpy as np
-from typing import Tuple, List
-from datamodel import FadeParams
 import concurrent.futures
+import cv2
+import math
+import numpy as np
+import os
+import re
 import subprocess
-from datetime import datetime
 import time
+from datetime import datetime
+from scipy.interpolate import CubicSpline
+from typing import List, Tuple
+
+from datamodel import FadeParams
 
 MIN_SEG_DIST = 4  # 6 if resolution >= 5760x1080px
 
@@ -107,8 +110,6 @@ class FadingLogic:
         Returns:
           (final_img, boundaries, filenames, loaded_colors)
         """
-        import cv2
-        import numpy as np
 
         if len(active_paths) < 2:
             return None
@@ -359,8 +360,6 @@ class FadingLogic:
         w: int,
         h: int
     ):
-        from scipy.interpolate import CubicSpline
-        # from scipy.interpolate import PchipInterpolator
 
         n_boundaries = len(boundary_splines_data)
         global_boundaries = []
@@ -460,11 +459,8 @@ class FadingLogic:
         """
         Renders frames => partial .mp4 in 'output/chunk' => merges => final in 'output'.
         Also applies:
-          - 'ghosting' effect (Variant B) with 'ghost_count' frames
+          - 'ghosting' effect with 'ghost_count' frames
           - horizontal splitting into 'split_count' parts => each part gets its own .mp4
-
-        If ghost_count <= 0 => no ghosting is applied.
-        If split_count=1 => normal single video.
 
         We'll store chunkfiles separately for each part. Then do a final merge per part.
 
@@ -483,7 +479,6 @@ class FadingLogic:
             ghost_count: frames for ghosting variant B
             split_count: how many horizontal splits (1..3)
         """
-        import math
 
         # This will hold the chunk path-lists per "part"
         # e.g. if split_count=3 => chunk_paths_per_part = [[],[],[]]
