@@ -1,14 +1,16 @@
+import cv2
+import multiprocessing
 import os
+import subprocess
 import time
 import tkinter as tk
-from tkinter import filedialog, ttk, messagebox
-import cv2
-from PIL import Image, ImageTk, ImageDraw, ImageFont
-from typing import List
-from datamodel import ImageData, SubfolderFadeData, FadeParams
-import fading
 from datetime import datetime
-import multiprocessing
+from PIL import Image, ImageDraw, ImageFont, ImageTk
+from tkinter import filedialog, messagebox, ttk
+from typing import List
+
+import fading
+from datamodel import FadeParams, ImageData, SubfolderFadeData
 
 BG_COLOR = "#dcdcdc"
 TEXT_BG_COLOR = (220, 220, 220, 255)
@@ -150,6 +152,22 @@ class FadingUI:
         )
         self.next_btn.pack(side="left", padx=5)
 
+        self.play_btn = tk.Button(
+            self.top_frame_1,
+            text="Play",
+            command=self._on_play_clicked,
+            bg=BG_COLOR
+        )
+        self.play_btn.pack(side="left", padx=5)
+
+        self.stop_btn = tk.Button(
+            self.top_frame_1,
+            text="Stop",
+            command=self._on_stop_clicked,
+            bg=BG_COLOR
+        )
+        self.stop_btn.pack(side="left", padx=5)
+
         self.calc_btn = tk.Button(
             self.top_frame_1, text="Calculate", command=self.calculate_fade, bg=BG_COLOR
         )
@@ -234,6 +252,8 @@ class FadingUI:
         )
         self.gamma_slider.set(DEFAULT_GAMMA)
         self.gamma_slider.pack(side="left", padx=5)
+        self.gamma_slider.bind("<ButtonRelease-1>",
+                               lambda e: self._slider_released())
 
         # Influence
         tk.Label(self.top_frame_2, text="Influence:",
@@ -249,13 +269,24 @@ class FadingUI:
         )
         self.influence_slider.set(DEFAULT_INFLUENCE)
         self.influence_slider.pack(side="left", padx=5)
+        self.influence_slider.bind(
+            "<ButtonRelease-1>", lambda e: self._slider_released())
 
         # Damping
         tk.Label(self.top_frame_2, text="Damping:",
                  bg=BG_COLOR).pack(side="left", padx=5)
-        self.damping_entry = tk.Entry(self.top_frame_2, width=6)
-        self.damping_entry.insert(0, str(DEFAULT_DAMPING))
-        self.damping_entry.pack(side="left", padx=5)
+        self.damping_slider = tk.Scale(
+            self.top_frame_2,
+            from_=0,
+            to=100,
+            resolution=1,
+            orient="horizontal",
+            bg=BG_COLOR,
+        )
+        self.damping_slider.set(DEFAULT_DAMPING)
+        self.damping_slider.pack(side="left", padx=5)
+        self.damping_slider.bind(
+            "<ButtonRelease-1>", lambda e: self._slider_released())
 
         # Weight Mode
         tk.Label(self.top_frame_2, text="Weighting:",
@@ -272,8 +303,9 @@ class FadingUI:
             "<<ComboboxSelected>>", self._on_weighting_changed)
 
         # Midpoint slider next to weighting
-        tk.Label(self.top_frame_2, text="Midpoint:",
-                 bg=BG_COLOR).pack(side="left", padx=5)
+        self.midpoint_label = tk.Label(
+            self.top_frame_2, text="Midpoint:", bg=BG_COLOR)
+        self.midpoint_label.pack(side="left", padx=5)
         self.midpoint_var = tk.IntVar(value=128)
         self.midpoint_slider = tk.Scale(
             self.top_frame_2,
@@ -284,6 +316,8 @@ class FadingUI:
             command=lambda val: self._draw_weight_curve()
         )
         self.midpoint_slider.pack(side="left", padx=5)
+        self.midpoint_slider.bind(
+            "<ButtonRelease-1>", lambda e: self._slider_released())
 
         # below the top frames => checkbox_frame
         self.checkbox_frame = tk.Frame(self.root, bg=BG_COLOR)
@@ -314,16 +348,43 @@ class FadingUI:
             self.ffmpeg_path = path
 
     def _on_weighting_changed(self, evt):
-        mode = self.weighting_var.get()  # "Exponential" or "Parabola"
+        mode = self.weighting_var.get()
         if mode == "Exponential":
-            # disable midpoint
             self.midpoint_slider.config(state="disabled")
+            self.midpoint_label.config(fg="gray")
         else:
-            # enable midpoint
             self.midpoint_slider.config(state="normal")
+            self.midpoint_label.config(fg="black")
+
+        # optional immediate recalc
         self._draw_weight_curve()
+        self.calculate_fade()
+
+    def _on_play_clicked(self):
+        self._is_playing = True
+        self._play_next()
+
+    def _on_stop_clicked(self):
+        self._is_playing = False
+
+    def _play_next(self):
+        # if not playing => do nothing
+        if not self._is_playing:
+            return
+
+        # check if we can go next
+        if self.subfolder_combo_idx < len(self.subfolder_names) - 1:
+            # do next
+            self.next_subfolder()   # calls self._create_subfolder_cards etc.
+            # let's wait some time => e.g. 1000ms (1sec) => then again
+            # or “self.calculate_fade()” might take some time => up to you how
+            # you want to handle it.
+            self.root.after(1500, self._play_next)
+        else:
+            self._is_playing = False
 
     # ------------- Subfolder Nav -----------
+
     def prev_subfolder(self):
         idx = self.subfolder_combo_idx - 1
         if idx < 0:
@@ -649,7 +710,7 @@ class FadingUI:
 
         gam = float(self.gamma_slider.get())
         inf = float(self.influence_slider.get())
-        dam = float(self.damping_entry.get())
+        dam = float(self.damping_slider.get())
         mid = float(self.midpoint_var.get())
         mod = self.weighting_var.get()
 
@@ -791,6 +852,12 @@ class FadingUI:
             x2, y2 = points[i+1]
             self.curve_canvas.create_line(x1, y1, x2, y2, fill="blue")
 
+    def _slider_released(self):
+        # re-draw weight curve
+        self._draw_weight_curve()
+        # run calculation
+        self.calculate_fade()
+
     # ------------- Export Current -------------
 
     def export_current_image(self):
@@ -803,7 +870,7 @@ class FadingUI:
         now_s = datetime.now().strftime("%Y%m%d_%H%M%S")
         gam_ = self.gamma_slider.get()
         inf_ = self.influence_slider.get()
-        dam_ = self.damping_entry.get()
+        dam_ = self.damping_slider.get()
         mid_ = self.midpoint_var.get()
         ftag = f"{now_s}_fading_g{gam_}i{inf_}d{dam_}m{mid_}"
         png_name = os.path.join(out_folder, f"{ftag}_current.png")
@@ -813,70 +880,91 @@ class FadingUI:
     # ------------- Export Video -------------
     def export_video(self):
         """
-        Opens a dialog to configure crossfade-video export,
-        including subfolder-slicing via Start/End comboboxes.
+        Opens a dialog to configure crossfade-video export in subfolder mode,
+        with all requested features.
         """
         if self.current_mode != MODE_SUBFOLDERS or len(self.subfolder_names) < 2:
             self.status_label.config(
-                text="Need multiple subfolders for global approach."
-            )
+                text="Need multiple subfolders for global approach.")
             return
 
         diag = tk.Toplevel(self.root)
         diag.title("Export")
         diag.configure(bg=BG_COLOR)
 
-        # --- Start/End Subfolder row ---
+        # 1) Show the current resolution at the top
+        try:
+            w_ = int(self.width_entry.get())
+            h_ = int(self.height_entry.get())
+        except ValueError:
+            w_, h_ = 3840, 720  # fallback
+        resolution_text = f"Video Resolution: {w_}x{h_}"
+        tk.Label(diag, text=resolution_text, bg=BG_COLOR).pack(
+            side="top", padx=5, pady=5)
+
+        # 2) Start Folder
         tk.Label(diag, text="Start Folder:", bg=BG_COLOR).pack(
             side="top", padx=5, pady=2)
         start_sub_cb = ttk.Combobox(
             diag, state="readonly", values=self.subfolder_names)
         start_sub_cb.pack(side="top", padx=5, pady=2)
-        start_sub_cb.current(0)  # default first
+        start_sub_cb.current(0)
 
+        # 3) End Folder
         tk.Label(diag, text="End Folder:", bg=BG_COLOR).pack(
             side="top", padx=5, pady=2)
         end_sub_cb = ttk.Combobox(
             diag, state="readonly", values=self.subfolder_names)
         end_sub_cb.pack(side="top", padx=5, pady=2)
-        end_sub_cb.current(len(self.subfolder_names)-1)  # default last
+        end_sub_cb.current(len(self.subfolder_names) - 1)
 
-        # --- Steps (Crossfades) ---
-        tk.Label(diag, text="Number of Crossfades:", bg=BG_COLOR).pack(
-            side="top", padx=5, pady=5
-        )
+        # callback: if start changes => limit end-subfolders to >= that index
+        def on_startfolder_changed(evt=None):
+            chosen_start = start_sub_cb.get()
+            idx_s = self.subfolder_names.index(chosen_start)
+            new_ends = self.subfolder_names[idx_s:]
+            end_sub_cb.config(values=new_ends)
+            end_sub_cb.current(len(new_ends) - 1)
+
+        start_sub_cb.bind("<<ComboboxSelected>>", on_startfolder_changed)
+
+        # 4) Steps (Crossfades)
+        tk.Label(diag, text="Number of Crossfades:",
+                 bg=BG_COLOR).pack(side="top", padx=5, pady=5)
         steps_var = tk.StringVar(value=str(DEFAULT_CROSSFADES))
         steps_entry = tk.Entry(diag, textvariable=steps_var)
         steps_entry.pack(side="top", padx=5, pady=5)
 
-        # --- FPS ---
+        # 5) FPS
         tk.Label(diag, text="Frames per Second:", bg=BG_COLOR).pack(
-            side="top", padx=5, pady=5
-        )
+            side="top", padx=5, pady=5)
         fps_var = tk.StringVar(value="25")
         fps_entry = tk.Entry(diag, textvariable=fps_var)
         fps_entry.pack(side="top", padx=5, pady=5)
 
-        # --- Frames per Batch ---
+        # 6) Frames per Chunk
         tk.Label(diag, text="Frames per Chunk:", bg=BG_COLOR).pack(
-            side="top", padx=5, pady=5
-        )
+            side="top", padx=5, pady=5)
         batch_var = tk.StringVar(value="1000")
         batch_entry = tk.Entry(diag, textvariable=batch_var)
         batch_entry.pack(side="top", padx=5, pady=5)
 
-        # --- Ghost Frames ---
-        tk.Label(diag, text="Ghost Frames:\n(Expensive, forces linear calculation.)", bg=BG_COLOR).pack(
-            side="top", padx=5, pady=5
+        # 7) Ghost Frames => slider 0..10
+        tk.Label(diag, text="Ghost Frames (0..10):",
+                 bg=BG_COLOR).pack(side="top", padx=5, pady=5)
+        ghost_slider = tk.Scale(
+            diag,
+            from_=0, to=10,
+            orient="horizontal",
+            resolution=1,
+            bg=BG_COLOR
         )
-        ghost_var = tk.StringVar(value="0")
-        ghost_entry = tk.Entry(diag, textvariable=ghost_var)
-        ghost_entry.pack(side="top", padx=5, pady=5)
+        ghost_slider.set(0)
+        ghost_slider.pack(side="top", padx=5, pady=5)
 
-        # --- Splits (1..3) ---
+        # 8) Final Videos => slider (1..3)
         tk.Label(diag, text="Final Videos:", bg=BG_COLOR).pack(
-            side="top", padx=5, pady=5
-        )
+            side="top", padx=5, pady=5)
         split_slider = tk.Scale(
             diag,
             from_=1,
@@ -888,10 +976,34 @@ class FadingUI:
         split_slider.set(1)
         split_slider.pack(side="top", padx=5, pady=5)
 
-        # --- Workers ---
-        tk.Label(diag, text="Workers:", bg=BG_COLOR).pack(
-            side="top", padx=5, pady=5
+        # 9) Combined Checkbox => disabled if split=1
+        combined_var = tk.BooleanVar(value=False)
+        combined_chk = tk.Checkbutton(
+            diag,
+            text="Also create one horizontally combined video?",
+            variable=combined_var,
+            bg=BG_COLOR
         )
+        combined_chk.pack(side="top", padx=5, pady=5)
+
+        # callback => if split=1 => disable combined
+        def on_split_slider_release(evt=None):
+            val = split_slider.get()
+            if val == 1:
+                combined_chk.config(state="disabled")
+                combined_var.set(False)
+            else:
+                combined_chk.config(state="normal")
+
+        split_slider.bind("<ButtonRelease-1>", on_split_slider_release)
+        # initial check
+        if split_slider.get() == 1:
+            combined_chk.config(state="disabled")
+            combined_var.set(False)
+
+        # 10) Workers
+        tk.Label(diag, text="Workers:", bg=BG_COLOR).pack(
+            side="top", padx=5, pady=5)
         max_cpu = multiprocessing.cpu_count()
         worker_slider = tk.Scale(
             diag,
@@ -905,21 +1017,51 @@ class FadingUI:
         worker_slider.set(default_workers)
         worker_slider.pack(side="top", padx=5, pady=5)
 
-        prog_frame = tk.Frame(diag, bg=BG_COLOR)
-        prog_frame.pack(side="top", fill="x", padx=10, pady=10)
-        tk.Label(prog_frame, text="Progress:", bg=BG_COLOR).pack(
-            side="top", padx=5, pady=2
-        )
-        progress_bar = ttk.Progressbar(
-            prog_frame, length=300, mode="determinate"
-        )
-        progress_bar.pack(side="top", padx=10, pady=2)
-
+        # 11) Delete chunks
         delete_var = tk.BooleanVar(value=True)
         delete_chk = tk.Checkbutton(
             diag, text="Delete chunks after merge?", variable=delete_var, bg=BG_COLOR
         )
         delete_chk.pack(side="top", padx=5, pady=5)
+
+        # 12) Progress bar
+        prog_frame = tk.Frame(diag, bg=BG_COLOR)
+        prog_frame.pack(side="top", fill="x", padx=10, pady=10)
+        tk.Label(prog_frame, text="Progress:", bg=BG_COLOR).pack(
+            side="top", padx=5, pady=2)
+        progress_bar = ttk.Progressbar(
+            prog_frame, length=300, mode="determinate")
+        progress_bar.pack(side="top", padx=10, pady=2)
+
+        # helper => horizontally combine parted videos via ffmpeg hstack
+        def build_combined_video_hstack(part_paths: List[str], out_path: str, ffmpeg_path: str):
+            n = len(part_paths)
+            if n < 2:
+                print("[HSTACK] only 1 or 0 parts => skip combined.")
+                return
+
+            cmd = [ffmpeg_path]
+            for pp in part_paths:
+                cmd += ["-i", pp]
+
+            # build a hstack filter, e.g. "[0:v][1:v]hstack=inputs=2"
+            input_refs = "".join(f"[{i}:v]" for i in range(n))
+            filter_str = f"{input_refs}hstack=inputs={n}"
+
+            cmd += [
+                "-filter_complex", filter_str,
+                "-c:v", "libx264",
+                "-crf", "18",
+                "-preset", "fast",
+                "-c:a", "copy",
+                out_path
+            ]
+            print("[HSTACK] =>", " ".join(cmd))
+            ret = subprocess.run(cmd, check=False)
+            if ret.returncode == 0:
+                print(f"[HSTACK] success => {out_path}")
+            else:
+                print(f"[HSTACK] fail => code {ret.returncode}")
 
         def on_ok():
             start_export = time.time()
@@ -927,20 +1069,11 @@ class FadingUI:
                 start_sub = start_sub_cb.get()
                 end_sub = end_sub_cb.get()
 
-                # find their indices
-                start_idx = self.subfolder_names.index(start_sub)
-                end_idx = self.subfolder_names.index(end_sub)
-                if start_idx > end_idx:
-                    messagebox.showerror(
-                        "Error", "Start folder is after End folder. Please fix order."
-                    )
-                    return
-
                 steps_val = int(steps_var.get())
                 fps_val = int(fps_var.get())
                 frames_val = int(batch_var.get())
                 workers_val = int(worker_slider.get())
-                ghost_val = int(ghost_var.get())
+                ghost_val = int(ghost_slider.get())
                 split_val = int(split_slider.get())
                 if (
                     steps_val < 1 or
@@ -952,55 +1085,59 @@ class FadingUI:
                 ):
                     raise ValueError
             except ValueError:
-                messagebox.showerror(
-                    "Error", "Invalid parameters."
-                )
+                messagebox.showerror("Error", "Invalid parameters.")
                 return
 
             if not os.path.isfile(self.ffmpeg_path):
                 self.status_label.config(text="Invalid ffmpeg path.")
                 return
 
-            # build a sub-list of subfolders in [start_idx..end_idx]
-            chosen_subfolders = self.subfolder_names[start_idx: end_idx + 1]
+            # compute global indices
+            start_idx = self.subfolder_names.index(start_sub)
+            end_idx = self.subfolder_names.index(end_sub)
+            if start_idx > end_idx:
+                messagebox.showerror(
+                    "Error", "Start folder cannot be after End folder.")
+                return
+
+            chosen_subfolders = self.subfolder_names[start_idx: end_idx+1]
             if len(chosen_subfolders) < 2:
                 messagebox.showerror(
-                    "Error", f"Need at least 2 subfolders in the range, found {len(chosen_subfolders)}."
-                )
+                    "Error", f"Need at least 2 subfolders, found {len(chosen_subfolders)}.")
                 return
 
-            # 1) build single fade for each subfolder => subfolder_fade_info (just for the chosen range)
+            # build subfolder fades in [start..end]
             if not self._build_subfolder_fades_range(chosen_subfolders):
                 messagebox.showerror(
-                    "Error", "Could not build fade for chosen subfolders."
-                )
+                    "Error", "Could not build fade for chosen subfolders.")
                 return
 
-            # 2) build global spline with that sub-range
+            # build global spline
             ret_spline = fading.FadingLogic.subfolder_interpolation_data(
                 chosen_subfolders, self.subfolder_fade_info, steps_val
             )
             if not ret_spline:
                 messagebox.showerror(
-                    "Error", "Global spline build returned None."
-                )
+                    "Error", "Global spline build returned None.")
                 return
             (keyframe_times, b_splines, c_splines,
              w_, h_, total_frames) = ret_spline
-            print(f"[INFO] Global Spline => total_frames={total_frames}")
 
             out_folder = "output"
-            if not os.path.exists(out_folder):
-                os.makedirs(out_folder)
+            os.makedirs(out_folder, exist_ok=True)
 
             now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
             igam = self.gamma_slider.get()
             iinf = self.influence_slider.get()
-            idam = self.damping_entry.get()
+            idam = (
+                self.damping_slider.get()
+                if hasattr(self, "damping_slider")
+                else self.damping_entry.get()
+            )
             imid = self.midpoint_var.get()
             ftag = f"{now_str}_fading_g{igam}i{iinf}d{idam}m{imid}"
 
-            # 3) partial frames => chunk => final merge
+            # main splitted approach
             fading.FadingLogic.export_crossfade_video(
                 keyframe_times=keyframe_times,
                 boundary_splines_data=b_splines,
@@ -1020,14 +1157,26 @@ class FadingUI:
                 ghost_count=ghost_val,
                 split_count=split_val
             )
+
+            # if split_val>1 and user wants combined => do an hstack
+            if split_val > 1 and combined_var.get():
+                part_paths = []
+                for p_idx in range(1, split_val+1):
+                    part_file = os.path.join(
+                        out_folder, f"{ftag}_part_{p_idx}.mp4")
+                    part_paths.append(part_file)
+
+                combined_mp4 = os.path.join(out_folder, f"{ftag}_combined.mp4")
+                build_combined_video_hstack(
+                    part_paths, combined_mp4, self.ffmpeg_path)
+
             diag.destroy()
             elap = time.time() - start_export
             mins = int(elap // 60)
             secs = int(elap % 60)
             if mins > 0:
                 self.status_label.config(
-                    text=f"Export done in {mins}min {secs}s."
-                )
+                    text=f"Export done in {mins}min {secs}s.")
             else:
                 self.status_label.config(text=f"Export done in {secs}s.")
 
@@ -1043,7 +1192,7 @@ class FadingUI:
         w_, h_ = self._get_dimensions()
         gam_ = float(self.gamma_slider.get())
         inf_ = float(self.influence_slider.get())
-        dam_ = float(self.damping_entry.get())
+        dam_ = float(self.damping_slider.get())
         mid_ = float(self.midpoint_var.get())
 
         for sf in self.subfolder_names:
@@ -1107,7 +1256,7 @@ class FadingUI:
         w_, h_ = self._get_dimensions()
         gam_ = float(self.gamma_slider.get())
         inf_ = float(self.influence_slider.get())
-        dam_ = float(self.damping_entry.get())
+        dam_ = float(self.damping_slider.get())
         mid_ = float(self.midpoint_var.get())
 
         # We clear subfolder_fade_info only partially or fully?
@@ -1177,6 +1326,59 @@ class FadingUI:
             )
 
         return True
+
+    def build_combined_video_hstack(
+        part_paths: List[str],
+        out_path: str,
+        ffmpeg_path: str,
+    ):
+        """
+        Uses FFmpeg hstack filter to combine multiple part_paths side by side (horizontal).
+        part_paths: the final splitted mp4 files (in correct order)
+        out_path: final single mp4
+        ffmpeg_path: path to ffmpeg.exe
+
+        If part_paths has length 2 => hstack=2
+        If part_paths has length 3 => hstack=3, etc.
+
+        Re-encoding is inevitable, because we're horizontally stacking frames.
+        """
+
+        n = len(part_paths)
+        if n < 2:
+            print(
+                "[INFO] build_combined_video_hstack => only 1 or 0 parts => skipping.")
+            return
+
+        # We'll need n -i inputs:
+        cmd = [ffmpeg_path]
+        idx = 0
+        for p in part_paths:
+            cmd += ["-i", p]
+            idx += 1
+
+        # Build the filter string: e.g. "[0:v][1:v]hstack=inputs=2"
+        # or "[0:v][1:v][2:v]hstack=inputs=3"
+        # We'll create something like: "[0:v][1:v][2:v]hstack=3"
+        input_refs = "".join(f"[{i}:v]" for i in range(n))
+        filter_str = f"{input_refs}hstack=inputs={n}"
+
+        # Complete command:
+        # Example: ffmpeg -i part_1.mp4 -i part_2.mp4 -filter_complex [0:v][1:v]hstack=2 -c:v libx264 ...
+        cmd += [
+            "-filter_complex", filter_str,
+            "-c:v", "libx264",  # e.g., H.264 codec
+            "-crf", "18",       # quality factor
+            "-preset", "fast",  # optional
+            "-c:a", "copy",     # keep audio track unchanged (if identical)
+            out_path
+        ]
+        print("[COMBINED] running:", " ".join(cmd))
+        ret = subprocess.run(cmd, check=False)
+        if ret.returncode == 0:
+            print(f"[COMBINED] success => {out_path}")
+        else:
+            print(f"[COMBINED] fail => code {ret.returncode}")
 
     def _get_dimensions(self):
         try:
