@@ -4,6 +4,7 @@ import os
 import subprocess
 import time
 import tkinter as tk
+import webbrowser
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 from tkinter import filedialog, messagebox, ttk
@@ -124,7 +125,7 @@ class FadingUI:
 
         self.btn_subfolders = tk.Button(
             self.top_frame_1,
-            text="Dir Subfolders",
+            text="Subfolders",
             command=self.select_subfolders,
             bg=BG_COLOR,
         )
@@ -153,12 +154,12 @@ class FadingUI:
         self.next_btn.pack(side="left", padx=5)
 
         self.play_btn = tk.Button(
-            self.top_frame_1, text="Play", command=self._on_play_clicked, bg=BG_COLOR
+            self.top_frame_1, text="Play", command=self._play_clicked, bg=BG_COLOR
         )
         self.play_btn.pack(side="left", padx=5)
 
         self.stop_btn = tk.Button(
-            self.top_frame_1, text="Stop", command=self._on_stop_clicked, bg=BG_COLOR
+            self.top_frame_1, text="Stop", command=self._stop_clicked, bg=BG_COLOR
         )
         self.stop_btn.pack(side="left", padx=5)
 
@@ -195,6 +196,11 @@ class FadingUI:
             self.top_frame_1, text="Quit", command=self.on_quit, bg=BG_COLOR
         )
         self.quit_btn.pack(side="left", padx=5)
+
+        self.about_btn = tk.Button(
+            self.top_frame_1, text="?", command=self.show_about, bg=BG_COLOR
+        )
+        self.about_btn.pack(side="left", padx=5)
 
         # ============ Row2 => top_frame_2 ===========
         self.top_frame_2 = tk.Frame(self.left_col_frame, bg=BG_COLOR)
@@ -303,7 +309,7 @@ class FadingUI:
             state="readonly",
         )
         self.weighting_cb.pack(side="top")
-        self.weighting_cb.bind("<<ComboboxSelected>>", self._on_weighting_changed)
+        self.weighting_cb.bind("<<ComboboxSelected>>", self._weighting_changed)
 
         # Midpoint slider next to weighting
         midpoint_frame = tk.Frame(self.top_frame_2, bg=BG_COLOR)
@@ -340,7 +346,7 @@ class FadingUI:
 
         # initial draw
         self._draw_weight_curve()
-        self._on_weighting_changed(None)
+        self._weighting_changed(None)
 
     def on_quit(self):
         self.root.destroy()
@@ -353,17 +359,17 @@ class FadingUI:
         if path:
             self.ffmpeg_path = path
 
-    def _on_weighting_changed(self, evt):
+    def _weighting_changed(self, evt):
         mode = self.weighting_var.get()
         if mode == "Exponential":
-            self._set_midpoint_slider_greyed(True)
+            self._set_midpoint_slider(True)
         else:
-            self._set_midpoint_slider_greyed(False)
+            self._set_midpoint_slider(False)
 
         self._draw_weight_curve()
         self.calculate_fade()
 
-    def _set_midpoint_slider_greyed(self, grey=True):
+    def _set_midpoint_slider(self, grey=True):
         """
         Enables or disables the midpoint slider visually:
         """
@@ -380,12 +386,12 @@ class FadingUI:
             )
             self.midpoint_label.config(fg="black")
 
-    def _on_play_clicked(self):
+    def _play_clicked(self):
         self._is_playing = True
         self.play_btn.config(relief="sunken")
         self._play_next()
 
-    def _on_stop_clicked(self):
+    def _stop_clicked(self):
         self._is_playing = False
         self.play_btn.config(relief="raised")
 
@@ -400,6 +406,42 @@ class FadingUI:
         else:
             self._is_playing = False
             self.play_btn.config(relief="raised")
+
+    def show_about(self):
+        diag = tk.Toplevel(self.root)
+        diag.title("About")
+        diag.configure(bg=BG_COLOR)
+        diag.geometry("320x160")
+
+        text_about = tk.Text(
+            diag, wrap="word", bg=BG_COLOR, fg="black", width=60, height=10
+        )
+        text_about.pack(side="top", padx=20, pady=20, fill="both", expand=True)
+        text_about.tag_configure("bold", font=("Arial", 10, "bold"))
+        text_about.tag_configure("link", foreground="blue", underline=True)
+
+        def open_link():
+            webbrowser.open_new("https://davidherren.ch")
+
+        text_about.tag_bind("link", "<Button-1>", lambda e: open_link())
+
+        def link_enter(evt):
+            text_about.config(cursor="hand2")
+
+        def link_leave(evt):
+            text_about.config(cursor="arrow")
+
+        text_about.tag_bind("link", "<Enter>", link_enter)
+        text_about.tag_bind("link", "<Leave>", link_leave)
+
+        text_about.insert("1.0", "Horizontal Fading\n", "bold")
+        text_about.insert("end", "Version 1.0\n\n")
+        text_about.insert("end", "https://davidherren.ch\n\n", "link")
+        text_about.insert("end", "Copyright © 2025 by David Herren.")
+        text_about.config(state="disabled")
+
+        close_btn = tk.Button(diag, text="Close", bg=BG_COLOR, command=diag.destroy)
+        close_btn.pack(side="bottom", padx=10, pady=10)
 
     # ------------- Subfolder Nav -----------
 
@@ -653,11 +695,13 @@ class FadingUI:
         self._recalc_brightness()
         self._run_fade_calculation()
         el = time.time() - start_t
-        # convert to min s style
         mins = int(el // 60)
         secs = int(el % 60)
         if mins > 0:
             self.status_label.config(text=f"Calculation done in {mins}min {secs}s.")
+        elif el < 1:
+            ms = int(el * 1000)
+            self.status_label.config(text=f"Calculation done in {ms}ms.")
         else:
             self.status_label.config(text=f"Calculation done in {secs}s.")
 
