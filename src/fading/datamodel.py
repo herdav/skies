@@ -1,7 +1,7 @@
-from dataclasses import dataclass
-from typing import List
 import tkinter as tk
 import numpy as np
+from dataclasses import dataclass
+from typing import List
 
 
 @dataclass
@@ -42,6 +42,9 @@ class SubfolderFadeData:
 
 @dataclass
 class FadeParams:
+    """
+    Contains all fade parameters
+    """
     width: int
     height: int
     gamma: float
