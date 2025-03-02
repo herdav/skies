@@ -1,8 +1,8 @@
 import os
 import json
 
-from routines.staticjpg import download_staticjpg
-from routines.dynamicjpg import download_dynamicjpg
+from routines.staticimg import download_staticimg
+from routines.dynamicimg import download_dynamicimg
 from routines.youtube import download_youtube
 from routines.faratel import download_faratel
 from routines.redspira import download_redspira
@@ -19,8 +19,8 @@ os.makedirs(output_folder, exist_ok=True)
 download_map = {}
 camera_routines = {
     "faratel": ("faratelcams", download_faratel),
-    "staticjpg": ("staticjpg", download_staticjpg),
-    "dynamicjpg": ("dynamicjpg", download_dynamicjpg),
+    "staticimg": ("staticimg", download_staticimg),
+    "dynamicimg": ("dynamicimg", download_dynamicimg),
     "youtube": ("youtube", download_youtube),
     "redspira": ("redspira", download_redspira),
     "snerpa": ("snerpa", download_snerpa),
@@ -70,20 +70,24 @@ def dispatch_download(item, logger):
     for routine_name, (cam_list, download_func) in download_map.items():
         if any(x["id"] == item_id for x in cam_list):
             try:
-                if routine_name == "dynamicjpg":
+                if routine_name == "dynamicimg":
                     src_pattern = item.get("src", None)
                     element_class = item.get("imgclass", None)
                     element_id = item.get("imgid", None)
+                    img_format = item.get("imgformat", None)
                     res = download_func(
                         url=item["url"],
                         image_id=item["id"],
                         src_pattern=src_pattern,
                         element_class=element_class,
                         element_id=element_id,
+                        img_format=img_format,
                     )
-                elif routine_name == "staticjpg":
-                    # Direct URL-based download for staticjpg
-                    res = download_func(url=item["url"], image_id=item["id"])
+                elif routine_name == "staticimg":
+                    res = download_func(
+                        url=item["url"],
+                        image_id=item["id"],
+                    )
                 elif routine_name == "usap":
                     element_id = item.get("imgid", None)
                     tab_id = item.get("tabid", None)
