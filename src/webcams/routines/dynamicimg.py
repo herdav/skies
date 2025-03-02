@@ -1,4 +1,4 @@
-# routines/dynamicjpg.py
+# routines/dynamicimg.py
 
 import requests
 from bs4 import BeautifulSoup
@@ -8,8 +8,8 @@ from urllib.parse import urljoin
 from datetime import datetime
 
 
-def download_dynamicjpg(
-    url, image_id, src_pattern=None, element_class=None, element_id=None
+def download_dynamicimg(
+    url, image_id, img_format, src_pattern=None, element_class=None, element_id=None
 ):
     """
     Download a JPG from a dynamic source.
@@ -61,10 +61,10 @@ def download_dynamicjpg(
             # Convert to full URL for pattern matching
             full_img_url = urljoin(url, img_src)
 
-            # Match src with the pattern and ensure it ends with .jpg
+            # Match src with the pattern and ensure it ends with the specified format
             if pattern and not re.search(pattern, full_img_url):
                 continue
-            if not full_img_url.lower().endswith(".jpg"):
+            if not full_img_url.lower().endswith(f".{img_format}"):
                 continue
 
             print(f"Found matching image URL: {full_img_url}")
@@ -81,7 +81,7 @@ def download_dynamicjpg(
             os.makedirs(output_folder, exist_ok=True)
 
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            filename = f"{image_id}_{timestamp}.jpg"
+            filename = f"{image_id}_{timestamp}.{img_format}"
             filepath = os.path.join(output_folder, filename)
 
             with open(filepath, "wb") as f:
@@ -92,13 +92,3 @@ def download_dynamicjpg(
 
     print(f"No image found on page {url} matching the given parameters.")
     return None
-
-
-# Example usage
-if __name__ == "__main__":
-    url = ""
-    image_id = ""
-    src_pattern = ""
-    img_class = ""
-
-    download_dynamicjpg(url, image_id, src_pattern=src_pattern)
