@@ -12,14 +12,9 @@ def download_dynamicimg(
     url, image_id, img_format, src_pattern=None, element_class=None, element_id=None
 ):
     """
-    Download a JPG from a dynamic source.
-    - url: the main page URL
-    - image_id: prefix for the output filename
-    - src_pattern: regex-like pattern that can contain '[...]' to be replaced by '.*'
-    - element_class: optional class of the <img> to find
+    Download a image from a dynamic source.
     """
 
-    # Basic checks
     if not url:
         print("No URL provided.")
         return None
@@ -27,11 +22,6 @@ def download_dynamicimg(
     if not image_id:
         print("No image_id provided.")
         return None
-
-    # Prepare the pattern for matching, if provided
-    pattern = None
-    if src_pattern:
-        pattern = src_pattern.replace("[...]", ".*")
 
     # Make the HTTP request
     try:
@@ -62,7 +52,7 @@ def download_dynamicimg(
             full_img_url = urljoin(url, img_src)
 
             # Match src with the pattern and ensure it ends with the specified format
-            if pattern and not re.search(pattern, full_img_url):
+            if src_pattern and not re.search(src_pattern, full_img_url):
                 continue
             if not full_img_url.lower().endswith(f".{img_format}"):
                 continue
