@@ -288,7 +288,7 @@ class WebcamApp:
                 f"set {int(self.cycle_seconds)}s per cycle ---------------------"
             )
         else:
-            cycle_info = "manual-run"
+            cycle_info = "----------------------------------------"
 
         self.safe_log(f"{cycle_info}")
 
