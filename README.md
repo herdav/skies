@@ -8,5 +8,3 @@ This application extracts the sky from webcams and creates an animation showing 
 ## Webcams
 
 ![capture](https://github.com/herdav/globalSkyCam/blob/main/img/ui-webcams.png)
-
-![capture](https://github.com/herdav/globalSkyCam/blob/main/img/ui-stats.png)
