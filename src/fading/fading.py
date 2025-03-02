@@ -12,7 +12,7 @@ from typing import List, Tuple
 
 from datamodel import FadeParams
 
-MIN_SEG_DIST = 4  # 6 if resolution >= 5760x1080px
+MIN_SEG_DIST = 6  # 6 if resolution >= 5760x1080px
 
 
 class ImageHelper:
@@ -34,8 +34,7 @@ class FadingLogic:
         # Try to match the UTC pattern in the file name
         m = re.match(r"^(UTC[+-]\d+(?:\.\d+)?).*", base, re.IGNORECASE)
         if m:
-            s2 = re.match(r"UTC([+-]\d+(?:\.\d+)?).*",
-                          m.group(1), re.IGNORECASE)
+            s2 = re.match(r"UTC([+-]\d+(?:\.\d+)?).*", m.group(1), re.IGNORECASE)
             if s2:
                 try:
                     return float(s2.group(1))
@@ -99,7 +98,7 @@ class FadingLogic:
         active_paths: list[str],
         brightness_list: list[int],
         proxy_list: list[bool],
-        fade_params: FadeParams
+        fade_params: FadeParams,
     ):
         """
         Builds a horizontal fade based on either a Exponential weighting or a Parabola weighting.
@@ -120,8 +119,7 @@ class FadingLogic:
         damping_val = fade_params.damping
         gamma_val = fade_params.gamma
         midpoint_val = fade_params.midpoint
-        weighting = getattr(fade_params, "weighting",
-                            "Parabola")  # default if missing
+        weighting = getattr(fade_params, "weighting", "Parabola")  # default if missing
 
         final_img = np.zeros((h_total, w_total, 3), dtype=np.uint8)
         boundaries = []
@@ -135,21 +133,21 @@ class FadingLogic:
             if img is None:
                 # fallback
                 dummy = np.zeros((10, 10, 3), dtype=np.uint8)
-                ratio = float(h_total)/10.0
-                new_w = max(1, int(10*ratio))
+                ratio = float(h_total) / 10.0
+                new_w = max(1, int(10 * ratio))
                 rz = cv2.resize(dummy, (new_w, h_total))
                 avg = np.mean(rz, axis=1).astype(np.uint8)
             else:
                 ratio = float(h_total) / float(img.shape[0])
-                new_w = max(1, int(img.shape[1]*ratio))
+                new_w = max(1, int(img.shape[1] * ratio))
                 rz = cv2.resize(img, (new_w, h_total))
                 avg = np.mean(rz, axis=1).astype(np.uint8)
             loaded_colors.append(avg)
 
         transitions = []
         original = []
-        for i in range(n-1):
-            ab = (brightness_list[i] + brightness_list[i+1]) * 0.5
+        for i in range(n - 1):
+            ab = (brightness_list[i] + brightness_list[i + 1]) * 0.5
             if ab < 0:
                 ab = 0
             if ab > 255:
@@ -169,11 +167,11 @@ class FadingLogic:
             else:
                 # square parabola => w_parab = 1 - ((ab-mid)/mid)^2
                 norm = (ab - midpoint_val) / float(midpoint_val)
-                wraw = 1.0 - (norm*norm)
+                wraw = 1.0 - (norm * norm)
                 if wraw < 0:
                     wraw = 0
                 if influence_val != 0:
-                    wgt_final = (wraw**influence_val)
+                    wgt_final = wraw**influence_val
                 else:
                     wgt_final = wraw
 
@@ -186,14 +184,14 @@ class FadingLogic:
         sum_o = sum(original)
 
         segw_float = []
-        for i in range(n-1):
+        for i in range(n - 1):
             w_i = transitions[i]
             frac_inf = w_i / sum_w
             frac_ori = original[i] / sum_o
-            infl_w = w_total*frac_inf
-            orig_w = w_total*frac_ori
+            infl_w = w_total * frac_inf
+            orig_w = w_total * frac_ori
             diff = infl_w - orig_w
-            max_shift = orig_w*(damping_val/100.0)
+            max_shift = orig_w * (damping_val / 100.0)
             if abs(diff) > max_shift:
                 if diff > 0:
                     infl_w = orig_w + max_shift
@@ -205,7 +203,7 @@ class FadingLogic:
         seg_int = FadingLogic.distribute_segment_widths(segw_float, w_total)
 
         x_start = 0
-        for i in range(n-1):
+        for i in range(n - 1):
             seg_pix = seg_int[i]
             fname = os.path.basename(active_paths[i])
             is_proxy = proxy_list[i]
@@ -216,31 +214,31 @@ class FadingLogic:
                 continue
 
             leftC = loaded_colors[i]
-            rightC = loaded_colors[i+1]
-            x_end = x_start+seg_pix
+            rightC = loaded_colors[i + 1]
+            x_end = x_start + seg_pix
             if x_end > w_total:
                 x_end = w_total
-            seg_w = x_end-x_start
+            seg_w = x_end - x_start
             if seg_w < 1:
                 boundaries.append(x_start)
                 fnames.append((fname, is_proxy))
                 continue
 
-            xi = np.linspace(
-                0.0, 1.0, seg_w, dtype=np.float32).reshape(1, seg_w, 1)
+            xi = np.linspace(0.0, 1.0, seg_w, dtype=np.float32).reshape(1, seg_w, 1)
             leftC_resh = leftC.reshape(h_total, 1, 3)
             rightC_resh = rightC.reshape(h_total, 1, 3)
-            grad = (1.0 - xi)*leftC_resh + xi*rightC_resh
+            grad = (1.0 - xi) * leftC_resh + xi * rightC_resh
             grad = grad.astype(np.uint8)
 
             from fading import MIN_SEG_DIST
+
             if seg_w < MIN_SEG_DIST:
                 # fill with average
-                avg_neighbor = 0.5*leftC_resh + 0.5*rightC_resh
+                avg_neighbor = 0.5 * leftC_resh + 0.5 * rightC_resh
                 avg_neighbor = avg_neighbor.astype(np.uint8)
                 grad = np.repeat(avg_neighbor, seg_w, axis=1)
 
-            final_img[:, x_start:x_start+seg_w] = grad
+            final_img[:, x_start : x_start + seg_w] = grad
 
             boundaries.append(x_start)
             fnames.append((fname, is_proxy))
@@ -248,7 +246,7 @@ class FadingLogic:
 
         lastn = os.path.basename(active_paths[-1])
         lastpx = proxy_list[-1]
-        boundaries.append(w_total-1)
+        boundaries.append(w_total - 1)
         fnames.append((lastn, lastpx))
 
         return (final_img, boundaries, fnames, loaded_colors)
@@ -358,7 +356,7 @@ class FadingLogic:
         boundary_splines_data: List[List[float]],
         color_splines_data: List[List[np.ndarray]],
         w: int,
-        h: int
+        h: int,
     ):
 
         n_boundaries = len(boundary_splines_data)
@@ -375,20 +373,21 @@ class FadingLogic:
         # 2) Evaluate color row-average
         # We'll do linear interpolation between the two keyframes
         m = len(keyframe_times)
-        pos = t_global*(m-1)
+        pos = t_global * (m - 1)
         i2 = int(np.floor(pos))
         local_t = pos - i2
-        if i2 >= m-1:
-            i2 = m-2
+        if i2 >= m - 1:
+            i2 = m - 2
             local_t = 1.0
 
         global_avg_colors = []
         for j in range(n_boundaries):
             c_list = color_splines_data[j]
             cA = c_list[i2]
-            cB = c_list[i2+1]
-            c_mix = np.clip((1.0 - local_t)*cA + local_t *
-                            cB, 0, 255).astype(np.uint8)
+            cB = c_list[i2 + 1]
+            c_mix = np.clip((1.0 - local_t) * cA + local_t * cB, 0, 255).astype(
+                np.uint8
+            )
             global_avg_colors.append(c_mix)
 
         # 3) Enforce strictly increasing boundaries
@@ -400,33 +399,33 @@ class FadingLogic:
                 global_boundaries.append(w)
                 global_avg_colors.append(global_avg_colors[-1])
             for ix in range(1, len(global_boundaries)):
-                if global_boundaries[ix] <= global_boundaries[ix-1]:
-                    global_boundaries[ix] = global_boundaries[ix-1] + 1
+                if global_boundaries[ix] <= global_boundaries[ix - 1]:
+                    global_boundaries[ix] = global_boundaries[ix - 1] + 1
                     if global_boundaries[ix] > w:
                         global_boundaries[ix] = w
 
         # 4) Build the frame using these boundaries + average colors
         frame = np.zeros((h, w, 3), dtype=np.uint8)
 
-        for j in range(len(global_boundaries)-1):
+        for j in range(len(global_boundaries) - 1):
             x0 = global_boundaries[j]
-            x1 = global_boundaries[j+1]
+            x1 = global_boundaries[j + 1]
             seg_w = x1 - x0
             if seg_w < 1:
                 seg_w = 1
-                x1 = x0+1
+                x1 = x0 + 1
 
             leftC = global_avg_colors[j].reshape(h, 1, 3)
-            rightC = global_avg_colors[j+1].reshape(h, 1, 3)
+            rightC = global_avg_colors[j + 1].reshape(h, 1, 3)
             xi = np.linspace(0.0, 1.0, seg_w).reshape(1, seg_w, 1)
-            grad = (1.0 - xi)*leftC + xi*rightC
+            grad = (1.0 - xi) * leftC + xi * rightC
             grad = grad.astype(np.uint8)
 
             # if seg_w < MIN_SEG_DIST => recolor entire gradient with average of leftC & rightC
             if seg_w < MIN_SEG_DIST:
                 # debug-print
                 # print(f"[DEBUG] Frame {frame_idx}, segment j={j}, seg_w={seg_w} => recolor (Variant B).")
-                avgC = 0.5*leftC + 0.5*rightC
+                avgC = 0.5 * leftC + 0.5 * rightC
                 avgC = avgC.astype(np.uint8)
                 grad = np.repeat(avgC, seg_w, axis=1)
 
@@ -437,6 +436,7 @@ class FadingLogic:
 
         return (frame_idx, frame, None)
 
+    @staticmethod
     def export_crossfade_video(
         keyframe_times: np.ndarray,
         boundary_splines_data: List[List[float]],
@@ -454,7 +454,7 @@ class FadingLogic:
         diag,
         delete_chunks: bool = True,
         ghost_count: int = 5,
-        split_count: int = 1
+        split_count: int = 1,
     ):
         """
         Renders frames => partial .mp4 in 'output/chunk' => merges => final in 'output'.
@@ -540,11 +540,7 @@ class FadingLogic:
                 chunk_paths_per_part[p].append(chunk_path)
 
                 vw = cv2.VideoWriter(
-                    chunk_path,
-                    fourcc,
-                    float(fps_val),
-                    (part_w, part_h),
-                    True
+                    chunk_path, fourcc, float(fps_val), (part_w, part_h), True
                 )
                 writer_parts.append(vw)
 
@@ -582,8 +578,7 @@ class FadingLogic:
                     try:
                         (ret_idx, frame, err) = fut.result()
                         if err:
-                            print(
-                                f"[ERROR] Worker error frame {ret_idx}: {err}")
+                            print(f"[ERROR] Worker error frame {ret_idx}: {err}")
                         else:
                             result_frames[ret_idx] = frame
                     except Exception as exc:
@@ -635,8 +630,7 @@ class FadingLogic:
             c_mins = int(chunk_time // 60)
             c_secs = int(chunk_time % 60)
             if c_mins > 0:
-                print(
-                    f"[INFO] chunk {chunk_idx} done in {c_mins}min {c_secs}s.")
+                print(f"[INFO] chunk {chunk_idx} done in {c_mins}min {c_secs}s.")
             else:
                 print(f"[INFO] chunk {chunk_idx} done in {c_secs}s.")
 
