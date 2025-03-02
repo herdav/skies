@@ -359,41 +359,22 @@ class FadingUI:
         if path:
             self.ffmpeg_path = path
 
-    def _weighting_changed(self, evt):
-        mode = self.weighting_var.get()
-        if mode == "Exponential":
-            self._set_midpoint_slider(True)
-        else:
-            self._set_midpoint_slider(False)
-
+    def _weighting_changed(self, evt=None):
+        is_exponential = self.weighting_var.get() == "Exponential"
+        self.midpoint_slider.config(state="disabled" if is_exponential else "normal")
+        self.midpoint_label.config(fg="gray" if is_exponential else "black")
         self._draw_weight_curve()
         self.calculate_fade()
 
-    def _set_midpoint_slider(self, grey=True):
-        """
-        Enables or disables the midpoint slider visually:
-        """
-        if grey:
-            self.midpoint_slider.config(
-                state="disabled",
-                bg=BG_COLOR,
-            )
-            self.midpoint_label.config(fg="gray")
-        else:
-            self.midpoint_slider.config(
-                state="normal",
-                bg="#eeeeee",
-            )
-            self.midpoint_label.config(fg="black")
-
     def _play_clicked(self):
-        self._is_playing = True
-        self.play_btn.config(relief="sunken")
-        self._play_next()
+        if self.current_mode == MODE_SUBFOLDERS:
+            self._is_playing = True
+            self.play_btn.config(relief="sunken", bg="red", fg="white")
+            self._play_next()
 
     def _stop_clicked(self):
         self._is_playing = False
-        self.play_btn.config(relief="raised")
+        self.play_btn.config(relief="raised", bg=BG_COLOR, fg="black")
 
     def _play_next(self):
         if not self._is_playing:
@@ -1027,7 +1008,7 @@ class FadingUI:
         ghost_slider.pack(side="top", padx=5, pady=5)
 
         # 8) Final Videos => slider (1..3)
-        tk.Label(diag, text="Final Videos:", bg=BG_COLOR).pack(
+        tk.Label(diag, text="Vertical Segments:", bg=BG_COLOR).pack(
             side="top", padx=5, pady=5
         )
         split_slider = tk.Scale(
