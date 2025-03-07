@@ -66,8 +66,8 @@ class FadingGenerator:
             cropped_img = fade_img.crop((0, min_y, fade_w, max_y + 1))
 
         # Resize to self.fade_height, then cut off self.fade_cut
-        fade_res = cropped_img.resize((fade_w, self.fade_height), Image.LANCZOS)
-        final_h = self.fade_height - self.fade_cut
+        fade_res = cropped_img.resize((fade_w, self.fade_height + self.fade_cut), Image.LANCZOS)
+        final_h = self.fade_height
         if final_h < 0:
             final_h = 0
         fade_final = fade_res.crop((0, 0, fade_w, final_h))
