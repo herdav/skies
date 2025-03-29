@@ -1,3 +1,4 @@
+import json
 import cv2
 import multiprocessing
 import os
@@ -9,6 +10,7 @@ from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 from tkinter import filedialog, messagebox, ttk
 from typing import List
+from numpy import diag
 
 import fading
 from datamodel import FadeParams, ImageData, SubfolderFadeData
@@ -22,10 +24,10 @@ MODE_FILES = 1
 MODE_SINGLE_DIR = 2
 MODE_SUBFOLDERS = 3
 
-DEFAULT_GAMMA = 2
-DEFAULT_DAMPING = 100
-DEFAULT_INFLUENCE = 4.0
-DEFAULT_CROSSFADES = 100
+DEFAULT_GAMMA = 2  # 2
+DEFAULT_DAMPING = 1000  # 100
+DEFAULT_INFLUENCE = 4  # 4
+DEFAULT_CROSSFADES = 100  # 100
 
 DEFAULT_WIDTH = 1152
 DEFAULT_HEIGHT = 216
@@ -184,6 +186,14 @@ class FadingUI:
         )
         self.export_video_btn.pack(side="left", padx=5)
 
+        self.export_movement_btn = tk.Button(
+            self.top_frame_1,
+            text="Export Movement",
+            command=self.export_movement,
+            bg=BG_COLOR,
+        )
+        self.export_movement_btn.pack(side="left", padx=5)
+
         self.ffmpeg_btn = tk.Button(
             self.top_frame_1,
             text="Path to FFmpeg",
@@ -251,9 +261,9 @@ class FadingUI:
         tk.Label(gamma_frame, text="Gamma:", bg=BG_COLOR).pack(side="top")
         self.gamma_slider = tk.Scale(
             gamma_frame,
-            from_=0.1,
+            from_=0,
             to=10,
-            resolution=0.1,
+            resolution=1,
             orient="horizontal",
             bg=BG_COLOR,
             command=lambda val: self._draw_weight_curve(),
@@ -509,7 +519,7 @@ class FadingUI:
         self.calculate_fade()
 
     def select_subfolders(self):
-        folder = filedialog.askdirectory(title="Select Directory (with Subfolders)")
+        folder = filedialog.askdirectory(title="Select Directory with Subfolders")
         if not folder:
             return
         self.set_mode(MODE_SUBFOLDERS)
@@ -1207,7 +1217,7 @@ class FadingUI:
             if split_val > 1 and combined_var.get():
                 part_paths = []
                 for p_idx in range(1, split_val + 1):
-                    part_file = os.path.join(out_folder, f"{ftag}_part_{p_idx}.mp4")
+                    part_file = os.path.join(out_folder, f"{ftag}_part-{p_idx}.mp4")
                     part_paths.append(part_file)
 
                 combined_mp4 = os.path.join(out_folder, f"{ftag}_combined.mp4")
@@ -1496,3 +1506,150 @@ class FadingUI:
             y_bottom = ch
             self.display_canvas.create_image(x_scaled, y_bottom, anchor="sw", image=rph)
             self.display_canvas.txt_refs.append(rph)
+
+    # ------------- Export Movement -------------
+    def export_movement(self):
+        if self.current_mode != MODE_SUBFOLDERS or len(self.subfolder_names) < 2:
+            self.status_label.config(
+                text="Need multiple subfolders for movement export."
+            )
+            return
+
+        diag = tk.Toplevel(self.root)
+        diag.title("Export Movement")
+        diag.configure(bg=BG_COLOR)
+
+        # Display the current resolution
+        try:
+            w_ = int(self.width_entry.get())
+            h_ = int(self.height_entry.get())
+        except ValueError:
+            w_, h_ = 3840, 720
+        resolution_text = f"Resolution: {w_}x{h_}px"
+        tk.Label(diag, text=resolution_text, bg=BG_COLOR, fg="blue").pack(
+            side="top", padx=5, pady=5
+        )
+
+        # Selection of Start and End Subfolders
+        folder_frame = tk.Frame(diag, bg=BG_COLOR)
+        folder_frame.pack(side="top", fill="x", padx=5, pady=2)
+        tk.Label(folder_frame, text="Start Folder:", bg=BG_COLOR).pack(
+            side="top", padx=5, pady=2
+        )
+        start_sub_cb = ttk.Combobox(
+            folder_frame, state="readonly", values=self.subfolder_names
+        )
+        start_sub_cb.pack(side="top", padx=5, pady=2)
+        start_sub_cb.current(0)
+        tk.Label(folder_frame, text="End Folder:", bg=BG_COLOR).pack(
+            side="top", padx=5, pady=2
+        )
+        end_sub_cb = ttk.Combobox(
+            folder_frame, state="readonly", values=self.subfolder_names
+        )
+        end_sub_cb.pack(side="top", padx=5, pady=2)
+        end_sub_cb.current(len(self.subfolder_names) - 1)
+
+        def on_startfolder_changed(evt=None):
+            chosen_start = start_sub_cb.get()
+            idx_s = self.subfolder_names.index(chosen_start)
+            new_ends = self.subfolder_names[idx_s:]
+            end_sub_cb.config(values=new_ends)
+            end_sub_cb.current(len(new_ends) - 1)
+
+        start_sub_cb.bind("<<ComboboxSelected>>", on_startfolder_changed)
+
+        # Input for the number of Crossfade Steps
+        tk.Label(diag, text="Crossfades Steps:", bg=BG_COLOR).pack(
+            side="top", padx=5, pady=5
+        )
+        steps_var = tk.StringVar(value=str(DEFAULT_CROSSFADES))
+        steps_entry = tk.Entry(diag, textvariable=steps_var)
+        steps_entry.pack(side="top", padx=5, pady=5)
+
+        def on_ok():
+            try:
+                steps_val = int(steps_var.get())
+                if steps_val < 1:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("Error", "Invalid steps value.")
+                return
+
+            start_sub = start_sub_cb.get()
+            end_sub = end_sub_cb.get()
+            start_idx = self.subfolder_names.index(start_sub)
+            end_idx = self.subfolder_names.index(end_sub)
+            if start_idx > end_idx:
+                messagebox.showerror(
+                    "Error", "Start folder cannot be after End folder."
+                )
+                return
+
+            chosen_subfolders = self.subfolder_names[start_idx : end_idx + 1]
+            if len(chosen_subfolders) < 2:
+                messagebox.showerror(
+                    "Error",
+                    f"Need at least 2 subfolders, found {len(chosen_subfolders)}.",
+                )
+                return
+
+            # Generate fade data for the selected subfolders
+            if not self._build_subfolder_fades_range(chosen_subfolders):
+                messagebox.showerror(
+                    "Error", "Could not build fade for chosen subfolders."
+                )
+                return
+
+            # Generate global spline data
+            ret_spline = fading.FadingLogic.subfolder_interpolation_data(
+                chosen_subfolders, self.subfolder_fade_info, steps_val
+            )
+            if not ret_spline:
+                messagebox.showerror("Error", "Global spline build returned None.")
+                return
+            (
+                keyframe_times,
+                boundary_splines_data,
+                color_splines_data,
+                w__,
+                h__,
+                total_frames,
+            ) = ret_spline
+
+            # Calculate movement data per frame
+            movement_data = []
+            for frame_idx in range(total_frames + 1):
+                frame_data = fading.FadingLogic.build_movement_data(
+                    frame_idx, keyframe_times, boundary_splines_data, w__, total_frames
+                )
+                movement_data.append(frame_data)
+
+            # Assemble the export object
+            export_obj = {
+                "width": w__,
+                "height": h__,
+                "total_frames": total_frames,
+                "subfolders": chosen_subfolders,
+                "movement_data": movement_data,
+                "keyframe_times": keyframe_times.tolist(),
+            }
+
+            # Save the JSON file in the output folder
+            out_folder = "output"
+            if not os.path.exists(out_folder):
+                os.makedirs(out_folder)
+            now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            export_filename = os.path.join(out_folder, f"{now_str}_movement.json")
+            try:
+                import json
+
+                with open(export_filename, "w", encoding="utf-8") as f:
+                    json.dump(export_obj, f, indent=4)
+                self.status_label.config(text=f"Movement exported => {export_filename}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Export failed: {str(e)}")
+            diag.destroy()
+
+        ok_btn = tk.Button(diag, text="OK", command=on_ok, bg=BG_COLOR)
+        ok_btn.pack(side="top", padx=5, pady=5)
