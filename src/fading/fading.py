@@ -525,7 +525,7 @@ class FadingLogic:
             end_i = min(start_i + frames_per_batch, total_frames + 1)
 
             # create video writers for each part
-            # chunk_name e.g. {file_tag}_chunk_001_part_1.mp4
+            # chunk_name e.g. {file_tag}_chunk_001_part-1.mp4
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             writer_parts = []
             for p in range(split_count):
@@ -534,7 +534,7 @@ class FadingLogic:
                 part_w = xe - xs
                 part_h = h
 
-                chunk_name = f"{file_tag}_chunk_{chunk_idx:03d}_part_{p+1}.mp4"
+                chunk_name = f"{file_tag}_chunk_{chunk_idx:03d}_part-{p+1}.mp4"
                 chunk_path = os.path.join(chunk_folder, chunk_name)
                 # remember this path to merge later
                 chunk_paths_per_part[p].append(chunk_path)
@@ -641,12 +641,12 @@ class FadingLogic:
         final_mp4_list = []
         for p in range(split_count):
             now_s = datetime.now().strftime("%Y%m%d_%H%M%S")
-            list_path = os.path.join(f"chunk_{now_s}_part_{p+1}.txt")
+            list_path = os.path.join(f"chunk_{now_s}_part-{p+1}.txt")
             with open(list_path, "w", encoding="utf-8") as f:
                 for cpath in chunk_paths_per_part[p]:
                     f.write(f"file '{cpath}'\n")
 
-            final_mp4 = os.path.join(out_folder, f"{file_tag}_part_{p+1}.mp4")
+            final_mp4 = os.path.join(out_folder, f"{file_tag}_part-{p+1}.mp4")
             cmd = [
                 ffmpeg_path,
                 "-f",
@@ -682,3 +682,23 @@ class FadingLogic:
         print(f"[INFO] Finished split_count={split_count}, final files:")
         for fmp4 in final_mp4_list:
             print("  ", fmp4)
+
+    @staticmethod
+    def build_movement_data(
+        frame_idx: int,
+        keyframe_times: np.ndarray,
+        boundary_splines_data: list,
+        w: int,
+        total_frames: int,
+    ) -> dict:
+        """
+        Calculates the global t-value (t_global) for the specified frame and
+        the interpolated x-coordinates (boundaries) of the segments.
+        """
+        t_global = frame_idx / total_frames
+        global_boundaries = []
+        for arr in boundary_splines_data:
+            spl = CubicSpline(keyframe_times, arr)
+            x_val = float(spl(t_global))
+            global_boundaries.append(int(round(x_val)))
+        return {"frame": frame_idx, "t": t_global, "boundaries": global_boundaries}
