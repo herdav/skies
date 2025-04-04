@@ -6,57 +6,98 @@ from tkinter import filedialog, messagebox
 from datetime import datetime
 
 
+def hhmmss_to_seconds(hhmmss: str) -> int:
+    """
+    Convert a string in 'hhmmss' format to an integer representing total seconds.
+    """
+    if len(hhmmss) != 6:
+        return 0
+    hh = int(hhmmss[0:2])
+    mm = int(hhmmss[2:4])
+    ss = int(hhmmss[4:6])
+    return hh * 3600 + mm * 60 + ss
+
+
+def seconds_to_hhmmss_str(total_seconds: int) -> str:
+    """
+    Convert an integer number of seconds into a string formatted 'Hh Mm Ss'.
+    """
+    if total_seconds < 0:
+        total_seconds = 0
+    hh = total_seconds // 3600
+    remainder = total_seconds % 3600
+    mm = remainder // 60
+    ss = remainder % 60
+    return f"{hh}h {mm}m {ss}s" if hh > 0 else f"{mm}m {ss}s"
+
+
 class FolderParser:
     """
-    Parses subfolders to determine whether each timezone was successful or failed.
-    Skips certain folder names and stores results for the rest.
+    Parses subfolders to determine:
+    - which timezone was successful or failed,
+    - the time difference between the oldest and newest file name in each subfolder (based on hhmmss),
+    - and skip certain folder names.
     """
 
-    RE_MERGE = re.compile(r"(UTC[+\-]\d+)_.*_merge\.png")
     RE_FAIL = re.compile(r"Download failed for (UTC[+\-]\d+)\s*=>")
-
     SKIP_FOLDERS = {"00000000_000000", "99999999_999999"}
 
-    def __init__(self, timezones):
+    # Now we search for a dash plus 6 digits before the file extension, e.g. "-091840.jpg"
+    # That means the file name might look like "UTC+0_20250404-091840.jpg".
+    RE_HHMMSS = re.compile(r"-(\d{6})\.")
+
+    def __init__(self, timezones, mode="Merge"):
         """
-        Initialize parser with a list of timezones.
+        :param timezones: list of timezones, e.g. ["UTC-11", ..., "UTC+12"]
+        :param mode: "Merge" => only *_merge.png, "Image" => *.png and *.jpg
         """
         self.timezones = timezones
         self.results = {}
 
+        if mode == "Merge":
+            # Example: "UTC-4_20250122_081806_merge.png"
+            self.re_image = re.compile(r"(UTC[+\-]\d+)_.*_merge\.png")
+        else:
+            # "Image" => match .png or .jpg (case-insensitive)
+            # Example: "UTC-4_20250122-081806.jpg" or ".png"
+            self.re_image = re.compile(r"(UTC[+\-]\d+)_.*\.(?:png|jpg)$", re.IGNORECASE)
+
     def parse(self, root_folder):
         """
-        Parse each subfolder in 'root_folder', scanning for *_merge.png (ok)
-        and .txt logs indicating failed downloads (false).
-
-        Skip folders named in SKIP_FOLDERS.
-
-        :param root_folder: The directory to parse
-        :return: Dictionary with parsing results
+        Scan each subfolder in 'root_folder'. For each subfolder:
+         - Skip if in SKIP_FOLDERS
+         - Initialize all timezones to False
+         - Check files:
+           - If it matches the image regex, set the corresponding tz to True
+           - If a .txt has a "Download failed ..." line, set tz to False
+           - Collect hhmmss to calculate min/max difference
         """
         entries = [e for e in os.scandir(root_folder) if e.is_dir()]
 
         for entry in entries:
             subfolder_name = entry.name
-
-            # Skip certain folder names
             if subfolder_name in self.SKIP_FOLDERS:
                 continue
 
-            # Initialize tz_status with booleans (False by default)
             tz_status = {tz: False for tz in self.timezones}
 
-            # Scan each file in the subfolder once
+            # We'll collect all hhmmss values here to compute min/max
+            times_in_subfolder = []
+
             for file_obj in os.scandir(entry.path):
                 if not file_obj.is_file():
                     continue
                 filename = file_obj.name
-                merge_match = self.RE_MERGE.match(filename)
-                if merge_match:
-                    tz_found = merge_match.group(1)
+
+                # Check for matching timezones
+                img_match = self.re_image.match(filename)
+                if img_match:
+                    tz_found = img_match.group(1)
                     if tz_found in tz_status:
                         tz_status[tz_found] = True
-                elif filename.endswith(".txt"):
+
+                # Check for "Download failed"
+                if filename.endswith(".txt"):
                     with open(file_obj.path, "r", encoding="utf-8") as txt_file:
                         for line in txt_file:
                             fail_match = self.RE_FAIL.search(line)
@@ -65,14 +106,28 @@ class FolderParser:
                                 if tz_failed in tz_status:
                                     tz_status[tz_failed] = False
 
-            # Summations for each subfolder
+                # Extract hhmmss if present
+                time_match = self.RE_HHMMSS.search(filename)
+                if time_match:
+                    hhmmss = time_match.group(1)
+                    times_in_subfolder.append(hhmmss)
+
             ok_count = sum(tz_status.values())
             fail_count = len(tz_status) - ok_count
+
+            # Compute time range (newest - oldest) if we found at least 2 times
+            if len(times_in_subfolder) >= 2:
+                seconds_list = [hhmmss_to_seconds(t) for t in times_in_subfolder]
+                range_sec = max(seconds_list) - min(seconds_list)
+                time_range_str = seconds_to_hhmmss_str(range_sec)
+            else:
+                time_range_str = ""
 
             self.results[subfolder_name] = {
                 "tz_status": tz_status,
                 "ok_count": ok_count,
-                "fail_count": fail_count
+                "fail_count": fail_count,
+                "time_range": time_range_str,
             }
 
         return self.results
@@ -85,17 +140,12 @@ class FolderParser:
 
     def compute_summary(self):
         """
-        Compute the summary of how many subfolders had each timezone set to ok.
-
-        :return: Dict of timezones with {ok_count: X, total: Y}
+        Compute how many subfolders had each timezone set to True.
         """
         total_subfolders = len(self.results)
         summary_dict = {}
         for tz in self.timezones:
-            summary_dict[tz] = {
-                "ok_count": 0,
-                "total": total_subfolders
-            }
+            summary_dict[tz] = {"ok_count": 0, "total": total_subfolders}
 
         for sub_data in self.results.values():
             for tz, val in sub_data["tz_status"].items():
@@ -111,34 +161,40 @@ class StatsApp(tk.Tk):
     """
 
     def __init__(self):
-        """
-        Initialize the main window, layout, and widgets.
-        """
         super().__init__()
         self.title("Statistical Analysis")
 
-        # Parser will be created once a folder is selected
         self.parser = None
-
-        # Build timezone list
+        self.selected_folder = None
         self.timezones = self._get_timezones()
 
-        # Top frame with buttons
+        # Top frame (buttons, dropdown)
         top_frame = tk.Frame(self)
         top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
 
         self.select_button = tk.Button(
-            top_frame,
-            text="Select Folder",
-            command=self.select_folder
+            top_frame, text="Select Folder", command=self.select_folder
         )
         self.select_button.pack(side=tk.LEFT, padx=5)
+
+        self.mode_var = tk.StringVar(value="Merge")
+        self.dropdown = tk.OptionMenu(top_frame, self.mode_var, "Merge", "Image")
+        self.dropdown.config(width=7)
+        self.dropdown.pack(side=tk.LEFT, padx=5)
+
+        self.calculate_button = tk.Button(
+            top_frame,
+            text="Calculate",
+            command=self.calculate_results,
+            state=tk.DISABLED,
+        )
+        self.calculate_button.pack(side=tk.LEFT, padx=5)
 
         self.export_button = tk.Button(
             top_frame,
             text="Export as json",
             command=self.export_results,
-            state=tk.DISABLED
+            state=tk.DISABLED,
         )
         self.export_button.pack(side=tk.LEFT, padx=5)
 
@@ -150,24 +206,17 @@ class StatsApp(tk.Tk):
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self.scrollbar = tk.Scrollbar(
-            self.canvas_frame,
-            orient="vertical",
-            command=self.canvas.yview
+            self.canvas_frame, orient="vertical", command=self.canvas.yview
         )
         self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
 
-        # Frame inside canvas to hold the table rows
         self.table_frame = tk.Frame(self.canvas)
         self.canvas.create_window((0, 0), window=self.table_frame, anchor="nw")
-
         self.table_frame.bind("<Configure>", self._on_frame_configure)
 
     def _get_timezones(self):
-        """
-        Build a list of timezones from UTC-11 to UTC+12.
-        """
         tz_list = []
         for i in range(-11, 13):
             if i >= 0:
@@ -178,41 +227,59 @@ class StatsApp(tk.Tk):
 
     def select_folder(self):
         """
-        Ask user for a directory, parse it, and build the table.
+        Let user pick a directory, but do not parse immediately.
+        Enable 'Calculate' so the user can run the analysis.
         """
         folder_selected = filedialog.askdirectory()
         if not folder_selected:
             return
 
-        # Clear existing table
-        for widget in self.table_frame.winfo_children():
-            widget.destroy()
+        self.selected_folder = folder_selected
+        self.clear_table()
 
-        # Create parser, parse the folder
-        self.parser = FolderParser(self.timezones)
-        self.parser.parse(folder_selected)
+        self.calculate_button.config(state=tk.NORMAL)
+        self.export_button.config(state=tk.DISABLED)
 
-        # Build the table
+    def calculate_results(self):
+        """
+        Create a parser with the chosen mode and parse the selected folder.
+        Then build the table with the results.
+        """
+        if not self.selected_folder:
+            return
+
+        self.clear_table()
+
+        mode_choice = self.mode_var.get()  # "Merge" or "Image"
+
+        self.parser = FolderParser(self.timezones, mode=mode_choice)
+        self.parser.parse(self.selected_folder)
+
         self._build_table()
 
         if self.parser.get_results():
             self.export_button.config(state=tk.NORMAL)
 
+    def clear_table(self):
+        """
+        Remove all widgets in the table frame.
+        """
+        for widget in self.table_frame.winfo_children():
+            widget.destroy()
+
     def _build_table(self):
         """
-        Build the table with:
-          1) Heading row at the top
-          2) Subfolder rows (sorted by datetime)
-          3) Heading row again at the bottom
-          4) Summary row
-        Also compute average of Diffs (seconds). If a Diff cell is ±5% off that average,
-        color it red with white text.
+        Build the table:
+         - Heading row at the top
+         - One row per subfolder (sorted by datetime in subfolder name if possible)
+         - Repeat the heading row at the bottom
+         - Summary row
         """
         results = self.parser.get_results()
         if not results:
             return
 
-        # Gather subfolders with dt
+        # Collect subfolders with valid datetime
         subfolders_dt = []
         for subfolder_name in results.keys():
             try:
@@ -221,49 +288,43 @@ class StatsApp(tk.Tk):
             except ValueError:
                 pass
 
-        # Sort them
         subfolders_dt.sort(key=lambda x: x[1])
 
-        # Compute diffs in seconds (for the 2..N subfolders)
-        # Store them so we can compute average
+        # Build diffs
         diffs_seconds = []
         for idx, (name, dt_val) in enumerate(subfolders_dt):
             if idx == 0:
-                # no diff
                 continue
             prev_dt = subfolders_dt[idx - 1][1]
             delta = dt_val - prev_dt
             diffs_seconds.append(int(delta.total_seconds()))
-
-        # Compute average
         avg_diff = 0
         if diffs_seconds:
-            avg_diff = sum(diffs_seconds) / len(diffs_seconds)  # float
+            avg_diff = sum(diffs_seconds) / len(diffs_seconds)
 
-        # We'll define columns like:
-        # col 0 => "Subfolder"
-        # col 1 => "Diff"
-        # col 2.. => timezones
-        # last => sum cell
+        # Columns:
+        # col 0 => Subfolder
+        # col 1 => Diff
+        # col 2 => Range
+        # col 3.. => timezones
+        # last => Fail
 
-        # 1) Heading row at the top
-        self._build_heading_row(row_index=0)
+        self._build_heading_row(0)
         row_index = 1
 
-        # 2) Subfolder rows
         for idx, (subfolder_name, dt_val) in enumerate(subfolders_dt):
             data = results[subfolder_name]
             tz_status = data["tz_status"]
-            ok_count = data["ok_count"]
             fail_count = data["fail_count"]
+            time_range_str = data["time_range"]
 
-            # Subfolder name
+            # Subfolder
             tk.Label(
                 self.table_frame,
                 text=subfolder_name,
                 borderwidth=1,
                 relief="solid",
-                anchor="center"
+                anchor="center",
             ).grid(row=row_index, column=0, sticky="nsew")
 
             # Diff
@@ -278,13 +339,10 @@ class StatsApp(tk.Tk):
                 seconds = diff_sec % 60
                 diff_str = f"{minutes}m {seconds}s"
 
-            # Determine background for diff cell
-            # By default, use parent's background:
             default_bg = self.table_frame.cget("bg")
             diff_bg = default_bg
             diff_fg = "black"
             diff_font = None
-
             if diff_sec is not None and avg_diff > 0:
                 ratio = abs(diff_sec - avg_diff) / avg_diff
                 if ratio > 0.05:
@@ -295,16 +353,25 @@ class StatsApp(tk.Tk):
             tk.Label(
                 self.table_frame,
                 text=diff_str,
+                bg=diff_bg,
+                fg=diff_fg,
+                font=diff_font,
                 borderwidth=1,
                 relief="solid",
                 anchor="center",
-                bg=diff_bg,
-                fg=diff_fg,
-                font=diff_font
             ).grid(row=row_index, column=1, sticky="nsew")
 
+            # Range
+            tk.Label(
+                self.table_frame,
+                text=time_range_str,
+                borderwidth=1,
+                relief="solid",
+                anchor="center",
+            ).grid(row=row_index, column=2, sticky="nsew")
+
             # Timezones
-            for c_idx, tz in enumerate(self.timezones, start=2):
+            for c_idx, tz in enumerate(self.timezones, start=3):
                 status_ok = tz_status[tz]
                 cell_bg = "#afffaf" if status_ok else "#ff0000"
                 cell_fg = "black" if status_ok else "white"
@@ -316,11 +383,11 @@ class StatsApp(tk.Tk):
                     fg=cell_fg,
                     borderwidth=1,
                     relief="solid",
-                    anchor="center"
+                    anchor="center",
                 ).grid(row=row_index, column=c_idx, sticky="nsew")
 
-            # Sum cell
-            sum_col_idx = 2 + len(self.timezones)
+            # Fail
+            sum_col_idx = 3 + len(self.timezones)
             if fail_count == 0:
                 sum_text = "0"
                 sum_bg = "#00ff00"
@@ -340,42 +407,37 @@ class StatsApp(tk.Tk):
                 font=sum_font,
                 borderwidth=1,
                 relief="solid",
-                anchor="center"
+                anchor="center",
             ).grid(row=row_index, column=sum_col_idx, sticky="nsew")
 
             row_index += 1
 
-        # 3) Heading row again at the bottom
-        bottom_heading_row = row_index
-        self._build_heading_row(row_index=bottom_heading_row)
+        # Repeat heading row
+        bottom_heading = row_index
+        self._build_heading_row(bottom_heading)
         row_index += 1
 
-        # 4) Summary row
+        # Summary row
         summary_row = row_index
         summary = self.parser.compute_summary()
         if summary:
-            # col 0 => blank
-            tk.Label(
-                self.table_frame,
-                text="",
-                borderwidth=1,
-                relief="solid",
-                anchor="center"
-            ).grid(row=summary_row, column=0, sticky="nsew")
+            # col 0 => empty
+            tk.Label(self.table_frame, text="", borderwidth=1, relief="solid").grid(
+                row=summary_row, column=0, sticky="nsew"
+            )
+            # col 1 => empty
+            tk.Label(self.table_frame, text="", borderwidth=1, relief="solid").grid(
+                row=summary_row, column=1, sticky="nsew"
+            )
+            # col 2 => empty
+            tk.Label(self.table_frame, text="", borderwidth=1, relief="solid").grid(
+                row=summary_row, column=2, sticky="nsew"
+            )
 
-            # col 1 => blank
-            tk.Label(
-                self.table_frame,
-                text="",
-                borderwidth=1,
-                relief="solid",
-                anchor="center"
-            ).grid(row=summary_row, column=1, sticky="nsew")
-
-            for c_idx, tz in enumerate(self.timezones, start=2):
-                ok_c = summary[tz]["ok_count"]
+            for c_idx, tz in enumerate(self.timezones, start=3):
+                ok_count = summary[tz]["ok_count"]
                 total = summary[tz]["total"]
-                missing = total - ok_c
+                missing = total - ok_count
                 if missing == 0:
                     cell_text = "0"
                     cell_bg = "#00ff00"
@@ -395,70 +457,72 @@ class StatsApp(tk.Tk):
                     font=cell_font,
                     borderwidth=1,
                     relief="solid",
-                    anchor="center"
+                    anchor="center",
                 ).grid(row=summary_row, column=c_idx, sticky="nsew")
 
-            # last column blank
-            last_col = 2 + len(self.timezones)
-            tk.Label(
-                self.table_frame,
-                text="",
-                borderwidth=1,
-                relief="solid",
-                anchor="center"
-            ).grid(row=summary_row, column=last_col, sticky="nsew")
-            row_index += 1
+            last_col = 3 + len(self.timezones)
+            tk.Label(self.table_frame, text="", borderwidth=1, relief="solid").grid(
+                row=summary_row, column=last_col, sticky="nsew"
+            )
 
-        # Let columns expand equally
-        total_cols = 2 + len(self.timezones) + 1
+        # Make columns expand evenly
+        total_cols = 3 + len(self.timezones) + 1
         for col_i in range(total_cols):
             self.table_frame.columnconfigure(col_i, weight=1)
 
         self.canvas.update_idletasks()
         self.canvas.config(scrollregion=self.canvas.bbox("all"))
 
-    def _build_heading_row(self, row_index):
+    def _build_heading_row(self, row_idx: int):
         """
-        Build the heading row at the given row_index:
-          Subfolder | Diff | <timezones> | "Fail"
+        Create a heading row with:
+         Subfolder | Diff | Range | <timezones> | Fail
         """
         tk.Label(
             self.table_frame,
             text="Subfolder",
             borderwidth=1,
             relief="solid",
-            anchor="center"
-        ).grid(row=row_index, column=0, sticky="nsew")
+            anchor="center",
+        ).grid(row=row_idx, column=0, sticky="nsew")
 
         tk.Label(
             self.table_frame,
             text="Diff",
             borderwidth=1,
             relief="solid",
-            anchor="center"
-        ).grid(row=row_index, column=1, sticky="nsew")
+            anchor="center",
+        ).grid(row=row_idx, column=1, sticky="nsew")
 
-        for i, tz in enumerate(self.timezones, start=2):
+        tk.Label(
+            self.table_frame,
+            text="Range",
+            borderwidth=1,
+            relief="solid",
+            anchor="center",
+        ).grid(row=row_idx, column=2, sticky="nsew")
+
+        for i, tz in enumerate(self.timezones, start=3):
             tk.Label(
                 self.table_frame,
                 text=tz,
                 borderwidth=1,
                 relief="solid",
-                anchor="center"
-            ).grid(row=row_index, column=i, sticky="nsew")
+                anchor="center",
+            ).grid(row=row_idx, column=i, sticky="nsew")
 
-        last_col = 2 + len(self.timezones)
+        last_col = 3 + len(self.timezones)
         tk.Label(
             self.table_frame,
-            text="Fail",  # was empty before, now user wants "Fail"
+            text="Fail",
             borderwidth=1,
             relief="solid",
-            anchor="center"
-        ).grid(row=row_index, column=last_col, sticky="nsew")
+            anchor="center",
+        ).grid(row=row_idx, column=last_col, sticky="nsew")
 
     def _on_frame_configure(self, event):
         """
-        Adjust canvas scroll region whenever the frame size changes.
+        Adjust the canvas scroll region whenever the frame size changes.
         """
         self.canvas.config(scrollregion=self.canvas.bbox("all"))
 
@@ -472,53 +536,48 @@ class StatsApp(tk.Tk):
         results = self.parser.get_results()
         summary = self.parser.compute_summary()
 
-        export_data = {
-            "subfolders": [],
-            "summary": {}
-        }
+        export_data = {"subfolders": [], "summary": {}}
 
         for subfolder_name, data in results.items():
             tz_bool_dict = data["tz_status"]
             tz_str_dict = {}
             for tz, val in tz_bool_dict.items():
-                # Convert boolean to "ok"/"false" for export
                 tz_str_dict[tz] = "ok" if val else "false"
 
-            export_data["subfolders"].append({
-                "name": subfolder_name,
-                "results": tz_str_dict,
-                "ok_count": data["ok_count"],
-                "fail_count": data["fail_count"]
-            })
+            export_data["subfolders"].append(
+                {
+                    "name": subfolder_name,
+                    "results": tz_str_dict,
+                    "ok_count": data["ok_count"],
+                    "fail_count": data["fail_count"],
+                    "time_range": data["time_range"],
+                }
+            )
 
         for tz, sdata in summary.items():
             export_data["summary"][tz] = {
                 "ok_count": sdata["ok_count"],
-                "total": sdata["total"]
+                "total": sdata["total"],
             }
 
         file_path = filedialog.asksaveasfilename(
             defaultextension=".json",
-            filetypes=[("JSON file", "*.json"), ("All files", "*.*")]
+            filetypes=[("JSON file", "*.json"), ("All files", "*.*")],
         )
         if file_path:
             try:
                 with open(file_path, "w", encoding="utf-8") as f:
                     json.dump(export_data, f, indent=2, ensure_ascii=False)
                 messagebox.showinfo(
-                    "Export successful",
-                    f"Data has been exported to:\n{file_path}"
+                    "Export successful", f"Data has been exported to:\n{file_path}"
                 )
             except Exception as e:
                 messagebox.showerror("Export error", str(e))
 
 
 def main():
-    """
-    Launch the StatsApp and run the main event loop.
-    """
     app = StatsApp()
-    app.geometry("1200x600")
+    app.geometry("1400x700")
     app.mainloop()
 
 
