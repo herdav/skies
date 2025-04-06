@@ -38,7 +38,7 @@ class FadingLogic:
             if s2:
                 try:
                     return float(s2.group(1))
-                except:
+                except Exception:
                     pass
         # If no UTC pattern is found, attempt to extract the value up to the first underscore
         underscore_index = base.find("_")
@@ -46,7 +46,7 @@ class FadingLogic:
             value_str = base[:underscore_index]
             try:
                 return float(value_str)
-            except:
+            except Exception:
                 pass
         # Return a default value if no valid pattern is found
         return 9999
@@ -117,7 +117,7 @@ class FadingLogic:
         h_total = fade_params.height
         influence_val = fade_params.influence
         damping_val = fade_params.damping
-        gamma_val = fade_params.gamma
+        # gamma_val = fade_params.gamma
         midpoint_val = fade_params.midpoint
         weighting = getattr(fade_params, "weighting", "Parabola")  # default if missing
 
@@ -358,20 +358,36 @@ class FadingLogic:
         w: int,
         h: int,
     ):
+        """
+        Builds a single frame from per-boundary spline data (boundary_splines_data)
+        and per-boundary average-colors (color_splines_data).
+        Each boundary j remains in its index position, ensuring no cross-boundary reordering.
+        """
+
+        from scipy.interpolate import CubicSpline
+        import numpy as np
+        from fading import MIN_SEG_DIST
 
         n_boundaries = len(boundary_splines_data)
-        global_boundaries = []
+        if n_boundaries == 0:
+            empty_frame = np.zeros((h, w, 3), dtype=np.uint8)
+            return (frame_idx, empty_frame, None)
 
-        # 1) Evaluate x-positions (boundaries)
+        # 1) Evaluate each boundary j using the same index order:
+        raw_boundaries = []
         for j in range(n_boundaries):
-            arr_j = boundary_splines_data[j]
+            arr_j = boundary_splines_data[j]  # timeseries for boundary j
             spl_j = CubicSpline(keyframe_times, arr_j)
-            # spl_j = PchipInterpolator(keyframe_times, arr_j)
             x_val = float(spl_j(t_global))
-            global_boundaries.append(int(round(x_val)))
+            # clamp to [0..w], so we don't exceed image width
+            if x_val < 0:
+                x_val = 0
+            elif x_val > w:
+                x_val = w
+            raw_boundaries.append(x_val)
 
-        # 2) Evaluate color row-average
-        # We'll do linear interpolation between the two keyframes
+        # 2) Evaluate color interpolations for each boundary j:
+        #    We'll do linear interpolation in time (between keyframes).
         m = len(keyframe_times)
         pos = t_global * (m - 1)
         i2 = int(np.floor(pos))
@@ -380,59 +396,75 @@ class FadingLogic:
             i2 = m - 2
             local_t = 1.0
 
-        global_avg_colors = []
+        raw_colors = []
         for j in range(n_boundaries):
             c_list = color_splines_data[j]
             cA = c_list[i2]
             cB = c_list[i2 + 1]
-            c_mix = np.clip((1.0 - local_t) * cA + local_t * cB, 0, 255).astype(
-                np.uint8
-            )
-            global_avg_colors.append(c_mix)
+            mix = (1.0 - local_t) * cA + local_t * cB
+            c_mix = np.clip(mix, 0, 255).astype(np.uint8)
+            raw_colors.append(c_mix)
 
-        # 3) Enforce strictly increasing boundaries
-        if n_boundaries > 0:
-            if global_boundaries[0] != 0:
-                global_boundaries.insert(0, 0)
-                global_avg_colors.insert(0, global_avg_colors[0])
-            if global_boundaries[-1] != w:
-                global_boundaries.append(w)
-                global_avg_colors.append(global_avg_colors[-1])
-            for ix in range(1, len(global_boundaries)):
-                if global_boundaries[ix] <= global_boundaries[ix - 1]:
-                    global_boundaries[ix] = global_boundaries[ix - 1] + 1
-                    if global_boundaries[ix] > w:
-                        global_boundaries[ix] = w
+        # 3) Force strict monotonic boundaries in ascending order,
+        #    but keep the original j-th index => no global sorting.
+        #    This local loop ensures boundary[j] >= boundary[j-1]+1, if possible.
+        #    Also note that some boundaries might "collapse" if the space is too small.
+        #    We accept that, but we won't reorder them across indices.
+        boundaries_fixed = []
+        boundaries_fixed.append(int(round(raw_boundaries[0])))
 
-        # 4) Build the frame using these boundaries + average colors
+        for j in range(1, n_boundaries):
+            prev_x = boundaries_fixed[j - 1]
+            this_x = int(round(raw_boundaries[j]))
+            if this_x <= prev_x:
+                # shift at least 1 pixel to the right
+                this_x = prev_x + 1
+                if this_x > w:
+                    this_x = w
+            boundaries_fixed.append(this_x)
+
+        # 4) Build the final (h,w) frame with these boundaries + average colors
+        #    We'll treat boundary[0] as the left edge for segment 0,
+        #    boundary[1] as the left edge for segment 1, etc.
+        #    We also might want an extra boundary at x=w for the final segment:
+        #    if boundaries_fixed[-1] < w, we insert w as the last boundary.
+        #    Otherwise we can consider that the j-th boundary is the j-th vertical "line".
+        #    The segment count will then be n_boundaries + 1 if we interpret boundaries as "vertical lines".
+        #    For clarity, let's do that, so we don't miss the final segment to the right edge.
+        if boundaries_fixed[-1] < w:
+            boundaries_fixed.append(w)
+            raw_colors.append(raw_colors[-1])  # reuse last color for the new boundary
+
         frame = np.zeros((h, w, 3), dtype=np.uint8)
 
-        for j in range(len(global_boundaries) - 1):
-            x0 = global_boundaries[j]
-            x1 = global_boundaries[j + 1]
+        # 5) For each segment j => from boundaries_fixed[j] to boundaries_fixed[j+1]
+        #    color-blend between raw_colors[j] and raw_colors[j+1].
+        seg_count = len(boundaries_fixed) - 1
+        for j in range(seg_count):
+            x0 = boundaries_fixed[j]
+            x1 = boundaries_fixed[j + 1]
             seg_w = x1 - x0
             if seg_w < 1:
-                seg_w = 1
-                x1 = x0 + 1
+                continue
 
-            leftC = global_avg_colors[j].reshape(h, 1, 3)
-            rightC = global_avg_colors[j + 1].reshape(h, 1, 3)
-            xi = np.linspace(0.0, 1.0, seg_w).reshape(1, seg_w, 1)
-            grad = (1.0 - xi) * leftC + xi * rightC
-            grad = grad.astype(np.uint8)
+            left_color = raw_colors[j].reshape(h, 1, 3)
+            right_color = raw_colors[min(j + 1, len(raw_colors) - 1)].reshape(h, 1, 3)
 
-            # if seg_w < MIN_SEG_DIST => recolor entire gradient with average of leftC & rightC
             if seg_w < MIN_SEG_DIST:
-                # debug-print
-                # print(f"[DEBUG] Frame {frame_idx}, segment j={j}, seg_w={seg_w} => recolor (Variant B).")
-                avgC = 0.5 * leftC + 0.5 * rightC
-                avgC = avgC.astype(np.uint8)
-                grad = np.repeat(avgC, seg_w, axis=1)
+                # fill with average if the segment is too narrow
+                avg_c = 0.5 * left_color + 0.5 * right_color
+                avg_c = avg_c.astype(np.uint8)
+                grad = np.repeat(avg_c, seg_w, axis=1)
+            else:
+                # normal gradient
+                xi = np.linspace(0.0, 1.0, seg_w).reshape(1, seg_w, 1)
+                grad = (1.0 - xi) * left_color + xi * right_color
+                grad = grad.astype(np.uint8)
 
             try:
                 frame[:, x0:x1] = grad
             except ValueError as e:
-                print("[ERROR] dimension mismatch in build_spline_frame:", e)
+                print(f"[ERROR] dimension mismatch in build_spline_frame: {e}")
 
         return (frame_idx, frame, None)
 
@@ -534,7 +566,7 @@ class FadingLogic:
                 part_w = xe - xs
                 part_h = h
 
-                chunk_name = f"{file_tag}_chunk_{chunk_idx:03d}_part-{p+1}.mp4"
+                chunk_name = f"{file_tag}_chunk_{chunk_idx:03d}_part-{p + 1}.mp4"
                 chunk_path = os.path.join(chunk_folder, chunk_name)
                 # remember this path to merge later
                 chunk_paths_per_part[p].append(chunk_path)
@@ -546,7 +578,7 @@ class FadingLogic:
 
             chunk_start_time = time.time()
             print(
-                f"[INFO] building chunk {chunk_idx}/{chunk_total}, frames {start_i}..{end_i-1} at {datetime.now().strftime('%H:%M:%S')}"
+                f"[INFO] building chunk {chunk_idx}/{chunk_total}, frames {start_i}..{end_i - 1} at {datetime.now().strftime('%H:%M:%S')}"
             )
 
             subset = tasks[start_i:end_i]
@@ -641,12 +673,12 @@ class FadingLogic:
         final_mp4_list = []
         for p in range(split_count):
             now_s = datetime.now().strftime("%Y%m%d_%H%M%S")
-            list_path = os.path.join(f"chunk_{now_s}_part-{p+1}.txt")
+            list_path = os.path.join(f"chunk_{now_s}_part-{p + 1}.txt")
             with open(list_path, "w", encoding="utf-8") as f:
                 for cpath in chunk_paths_per_part[p]:
                     f.write(f"file '{cpath}'\n")
 
-            final_mp4 = os.path.join(out_folder, f"{file_tag}_part-{p+1}.mp4")
+            final_mp4 = os.path.join(out_folder, f"{file_tag}_part-{p + 1}.mp4")
             cmd = [
                 ffmpeg_path,
                 "-f",
@@ -668,11 +700,11 @@ class FadingLogic:
                     for cp in chunk_paths_per_part[p]:
                         try:
                             os.remove(cp)
-                        except:
+                        except Exception:
                             pass
                     try:
                         os.remove(list_path)
-                    except:
+                    except Exception:
                         pass
                 final_mp4_list.append(final_mp4)
             else:
