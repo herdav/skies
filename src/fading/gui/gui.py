@@ -7,27 +7,31 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
-from subfolder import SubfolderManager
-from controller import FadeController
-from dialogs import AboutDialog, ExportVideoDialog, ExportMovementDialog
-from datamodel import ImageData
-from fading import ImageHelper
+from config.config import config
+from gui.dialogs import AboutDialog, ExportVideoDialog, ExportMovementDialog
+from utils.subfolder import SubfolderManager
+from utils.controller import FadeController
+from utils.datamodel import ImageData
+from utils.fading import ImageHelper
 
-BG_COLOR = "#dcdcdc"
-TEXT_BG_COLOR = (220, 220, 220, 255)
-TEXT_FONT_SIZE = 12
 
-MODE_NONE = 0
-MODE_FILES = 1
-MODE_SINGLE_DIR = 2
-MODE_SUBFOLDERS = 3
+FFMPEG_PATH = config["FFMPEG_PATH"]
 
-DEFAULT_GAMMA = 2
-DEFAULT_DAMPING = 1000
-DEFAULT_INFLUENCE = 4
-DEFAULT_CROSSFADES = 100
-DEFAULT_WIDTH = 1152
-DEFAULT_HEIGHT = 216
+BG_COLOR = config["BG_COLOR"]
+TEXT_BG_COLOR = config.get("TEXT_BG_COLOR")
+TEXT_FONT_SIZE = config.get("TEXT_FONT_SIZE")
+
+MODE_NONE = config.get("MODE_NONE")
+MODE_FILES = config.get("MODE_FILES")
+MODE_SINGLE_DIR = config.get("MODE_SINGLE_DIR")
+MODE_SUBFOLDERS = config.get("MODE_SUBFOLDERS")
+
+DEFAULT_GAMMA = config.get("DEFAULT_GAMMA")
+DEFAULT_DAMPING = config.get("DEFAULT_DAMPING")
+DEFAULT_INFLUENCE = config.get("DEFAULT_INFLUENCE")
+DEFAULT_CROSSFADES = config.get("DEFAULT_CROSSFADES")
+DEFAULT_WIDTH = config.get("DEFAULT_WIDTH")
+DEFAULT_HEIGHT = config.get("DEFAULT_HEIGHT")
 
 
 def create_image_checkboxes(parent_frame, image_data_list, bg_color="#dcdcdc"):
@@ -67,24 +71,16 @@ class FadingUI:
     It delegates subfolder logic to SubfolderManager and fade calculations/exports to FadeController.
     """
 
-    def __init__(self, root: tk.Tk, ffmpeg_path: str = ""):
+    def __init__(self, root: tk.Tk):
         """
-        Initializes the FadingUI with a root Tk window and an optional ffmpeg_path from config.
+        Initializes the FadingUI with a root Tk window.
+        Loads the configuration from config.json.
         """
         self.root = root
         self.root.title("Horizontal Fading")
         self.root.configure(bg=BG_COLOR)
         self.root.geometry("1500x800")
-
-        # If we got a path from config.json, use it. Otherwise fallback.
-        if ffmpeg_path:
-            self.ffmpeg_path = ffmpeg_path
-        else:
-            # fallback if user didn't define a config
-            self.ffmpeg_path = (
-                r"C:\Users\herda\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg.Essentials_Microsoft."
-                r"Winget.Source_8wekyb3d8bbwe\ffmpeg-7.1-essentials_build\bin\ffmpeg.exe"
-            )
+        self.ffmpeg_path = FFMPEG_PATH
 
         self.current_mode = MODE_NONE
         self.image_data: List[ImageData] = []
@@ -678,7 +674,7 @@ class FadingUI:
             return
 
         wpar = self.fade_controller.get_current_weighting_params()
-        out_folder = "output"
+        out_folder = "_output"
         if not os.path.exists(out_folder):
             os.makedirs(out_folder)
         now_s = time.strftime("%Y%m%d_%H%M%S")
