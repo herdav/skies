@@ -3,8 +3,8 @@ import json
 from datetime import datetime
 from typing import List, Dict
 
-from datamodel import ImageData, SubfolderFadeData, FadeParams
-from fading import FadingLogic, ImageHelper
+from utils.datamodel import ImageData, SubfolderFadeData, FadeParams
+from utils.fading import FadingLogic, ImageHelper
 
 
 class FadeController:
@@ -261,7 +261,7 @@ class FadeController:
             return []
 
         # Use subfolder_interpolation_data from fading
-        from fading import FadingLogic
+        from utils.fading import FadingLogic
 
         ret_spline = FadingLogic.subfolder_interpolation_data(
             sub_list, self.subfolder_fade_info, steps_val
@@ -278,7 +278,7 @@ class FadeController:
             total_frames,
         ) = ret_spline
 
-        out_folder = "output"
+        out_folder = "_output"
         if not os.path.exists(out_folder):
             os.makedirs(out_folder)
 
@@ -372,7 +372,7 @@ class FadeController:
         if len(sub_list) < 2:
             return {}
 
-        from fading import FadingLogic
+        from utils.fading import FadingLogic
 
         ret_spline = FadingLogic.subfolder_interpolation_data(
             sub_list, self.subfolder_fade_info, steps_val
@@ -408,7 +408,7 @@ class FadeController:
     def save_movement_data(self, export_obj: dict) -> str:
         if not export_obj:
             return ""
-        out_folder = "output"
+        out_folder = "_output"
         if not os.path.exists(out_folder):
             os.makedirs(out_folder)
         now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
