@@ -45,6 +45,7 @@ class FadeParams:
     """
     Contains all fade parameters
     """
+
     width: int
     height: int
     gamma: float
