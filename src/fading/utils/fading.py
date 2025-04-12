@@ -10,9 +10,11 @@ from datetime import datetime
 from scipy.interpolate import CubicSpline
 from typing import List, Tuple
 
-from datamodel import FadeParams
+from config.config import config
+from utils.datamodel import FadeParams
 
-MIN_SEG_DIST = 6  # 6 if resolution >= 5760x1080px
+
+MIN_SEG_DIST = config["MIN_SEG_DIST"]
 
 
 class ImageHelper:
@@ -230,7 +232,7 @@ class FadingLogic:
             grad = (1.0 - xi) * leftC_resh + xi * rightC_resh
             grad = grad.astype(np.uint8)
 
-            from fading import MIN_SEG_DIST
+            from utils.fading import MIN_SEG_DIST
 
             if seg_w < MIN_SEG_DIST:
                 # fill with average
@@ -366,7 +368,7 @@ class FadingLogic:
 
         from scipy.interpolate import CubicSpline
         import numpy as np
-        from fading import MIN_SEG_DIST
+        from utils.fading import MIN_SEG_DIST
 
         n_boundaries = len(boundary_splines_data)
         if n_boundaries == 0:
