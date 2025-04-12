@@ -1,8 +1,8 @@
 import os
 from typing import Dict, List, Tuple
 
-from datamodel import ImageData
-from fading import FadingLogic, ImageHelper
+from utils.datamodel import ImageData
+from utils.fading import FadingLogic, ImageHelper
 
 
 class SubfolderManager:
