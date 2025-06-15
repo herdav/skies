@@ -76,8 +76,8 @@ def dispatch_download(item: Dict[str, Any], logger) -> Tuple[bool, bool]:  # noq
                 return _check_new_file(item_id, result, prev_files, routine_name, logger)
             except Exception as e:
                 logger(f"{routine_name}: {e}")
-                return False
-    return False
+                return False, False
+    return False, False
 
 
 def _check_new_file(
